@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from .models import AgentRecord, Message, SendResult
+from .models import MAX_BODY_BYTES, MAX_METADATA_BYTES, AgentRecord, Message, SendResult
 
 SCHEMA_PATH: Path = Path(__file__).parent / "schema.sql"
 
@@ -62,6 +63,111 @@ class Store:
                 last_seen_at=datetime.fromisoformat(r["last_seen_at"]),
                 online=False,  # liveness is decided at the server layer
                 metadata=None,
+            )
+            for r in rows
+        ]
+
+    # -- messaging ---------------------------------------------------------
+
+    def send_message(
+        self,
+        sender: str,
+        recipient: str,
+        body: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> SendResult:
+        if sender == recipient:
+            raise ValueError("TARGET_SELF: cannot send to self")
+        if len(body.encode("utf-8")) > MAX_BODY_BYTES:
+            raise ValueError(f"MESSAGE_TOO_LARGE: body exceeds {MAX_BODY_BYTES} bytes")
+        metadata_json: str | None = None
+        if metadata is not None:
+            metadata_json = json.dumps(metadata, separators=(",", ":"))
+            if len(metadata_json.encode("utf-8")) > MAX_METADATA_BYTES:
+                raise ValueError(
+                    f"METADATA_TOO_LARGE: metadata exceeds {MAX_METADATA_BYTES} bytes"
+                )
+
+        exists = self._conn.execute(
+            "SELECT 1 FROM agents WHERE id = ?", (recipient,)
+        ).fetchone()
+        if not exists:
+            raise ValueError(f"TARGET_UNKNOWN: {recipient}")
+
+        message_id = uuid.uuid4().hex
+        now = datetime.now(timezone.utc)
+        self._conn.execute(
+            """
+            INSERT INTO messages (id, sender_id, recipient_id, body, metadata, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (message_id, sender, recipient, body, metadata_json, now.isoformat()),
+        )
+        return SendResult(message_id=message_id, sent_at=now, recipient=recipient)
+
+    def read_inbox(
+        self,
+        agent_id: str,
+        limit: int = 10,
+        unread_only: bool = True,
+    ) -> list[Message]:
+        limit = max(1, min(limit, 100))
+        if unread_only:
+            # Atomic select-and-mark: BEGIN, SELECT, UPDATE, COMMIT.
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                rows = self._conn.execute(
+                    """
+                    SELECT id, sender_id, recipient_id, body, metadata, created_at, read_at
+                    FROM messages
+                    WHERE recipient_id = ? AND read_at IS NULL
+                    ORDER BY created_at ASC
+                    LIMIT ?
+                    """,
+                    (agent_id, limit),
+                ).fetchall()
+                if rows:
+                    now = datetime.now(timezone.utc).isoformat()
+                    placeholders = ",".join("?" * len(rows))
+                    self._conn.execute(
+                        f"UPDATE messages SET read_at = ? WHERE id IN ({placeholders})",
+                        (now, *[r["id"] for r in rows]),
+                    )
+                    # Re-read to include read_at values in returned objects
+                    rows = self._conn.execute(
+                        f"""
+                        SELECT id, sender_id, recipient_id, body, metadata, created_at, read_at
+                        FROM messages
+                        WHERE id IN ({placeholders})
+                        ORDER BY created_at ASC
+                        """,
+                        tuple(r["id"] for r in rows),
+                    ).fetchall()
+                self._conn.execute("COMMIT")
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
+        else:
+            rows = self._conn.execute(
+                """
+                SELECT id, sender_id, recipient_id, body, metadata, created_at, read_at
+                FROM messages
+                WHERE recipient_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (agent_id, limit),
+            ).fetchall()
+
+        return [
+            Message(
+                id=r["id"],
+                sender_id=r["sender_id"],
+                recipient_id=r["recipient_id"],
+                body=r["body"],
+                metadata=json.loads(r["metadata"]) if r["metadata"] else None,
+                created_at=datetime.fromisoformat(r["created_at"]),
+                read_at=datetime.fromisoformat(r["read_at"]) if r["read_at"] else None,
             )
             for r in rows
         ]
