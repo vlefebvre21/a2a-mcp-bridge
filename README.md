@@ -48,6 +48,31 @@ a2a-mcp-bridge serve --db ~/.a2a-bus.sqlite
 # (see docs/mcp-client-setup.md once v0.1 ships)
 ```
 
+## Getting started with Claude Desktop
+
+Add this snippet to your Claude Desktop config
+(`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS,
+`%APPDATA%\Claude\claude_desktop_config.json` on Windows):
+
+```jsonc
+{
+  "mcpServers": {
+    "a2a-bus": {
+      "command": "a2a-mcp-bridge",
+      "args": ["serve"],
+      "env": {
+        "A2A_AGENT_ID": "claude-desktop-vince",
+        "A2A_DB_PATH": "/home/vince/.a2a-bus.sqlite"
+      }
+    }
+  }
+}
+```
+
+Restart Claude Desktop. The three tools `agent_send`, `agent_inbox`, and
+`agent_list` become available. Any other MCP-capable agent pointed at the same
+`A2A_DB_PATH` (with its own `A2A_AGENT_ID`) can exchange messages with you.
+
 ## Project ethos
 
 - **Minimal.** No framework lock-in. Pure MCP + SQLite.
