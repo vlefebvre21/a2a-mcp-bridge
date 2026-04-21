@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import sqlite3
@@ -16,6 +17,9 @@ from .store import Store
 
 AGENT_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 DEFAULT_HERMES_PROFILES = "~/.hermes/profiles"
+DEFAULT_HERMES_ROOT = "~/.hermes"
+DEFAULT_WAKE_REGISTRY = "~/.a2a-wake-registry.json"
+ROOT_PROFILE_AGENT_ID = "vlbeau-opus"
 AGENT_ID_PREFIX = "vlbeau-"
 
 app = typer.Typer(
@@ -25,8 +29,10 @@ app = typer.Typer(
 )
 agents_app = typer.Typer(help="Manage and inspect agents.")
 messages_app = typer.Typer(help="Inspect messages.")
+wake_registry_app = typer.Typer(help="Manage the Telegram wake-up registry.")
 app.add_typer(agents_app, name="agents")
 app.add_typer(messages_app, name="messages")
+app.add_typer(wake_registry_app, name="wake-registry")
 
 console = Console()
 DEFAULT_DB = "~/.a2a-bus.sqlite"
@@ -187,6 +193,124 @@ def messages_tail(
             r["created_at"],
             "✓" if r["read_at"] else "",
         )
+    console.print(table)
+
+
+# --------------------------------------------------------------------------- #
+# wake-registry commands (v0.3)
+# --------------------------------------------------------------------------- #
+
+
+def _parse_env_file(path: Path) -> dict[str, str]:
+    """Parse a minimal KEY=VALUE .env file.
+
+    Strips surrounding single/double quotes on values. Ignores blank lines and
+    lines starting with '#'. Lines without '=' are skipped silently.
+    """
+    values: dict[str, str] = {}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return values
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip()
+        if (value.startswith('"') and value.endswith('"')) or (
+            value.startswith("'") and value.endswith("'")
+        ):
+            value = value[1:-1]
+        if key:
+            values[key] = value
+    return values
+
+
+def _entry_from_env(env: dict[str, str]) -> dict[str, str] | None:
+    token = env.get("TELEGRAM_BOT_TOKEN", "").strip()
+    chat_id = env.get("TELEGRAM_HOME_CHANNEL", "").strip()
+    if not token or not chat_id:
+        return None
+    return {"bot_token": token, "chat_id": chat_id}
+
+
+@wake_registry_app.command("init")
+def wake_registry_init(
+    hermes_profiles: str = typer.Option(
+        DEFAULT_HERMES_PROFILES,
+        "--hermes-profiles",
+        help="Path to the Hermes profiles directory.",
+    ),
+    hermes_root: str = typer.Option(
+        DEFAULT_HERMES_ROOT,
+        "--hermes-root",
+        help="Path to the Hermes root directory (its .env is mapped to vlbeau-opus).",
+    ),
+    output: str = typer.Option(
+        DEFAULT_WAKE_REGISTRY,
+        "--output",
+        "-o",
+        help="Where to write the generated wake-registry JSON file.",
+    ),
+) -> None:
+    """Build the Telegram wake-up registry from existing Hermes profiles.
+
+    Scans ``<hermes-profiles>/<name>/.env`` for every subdirectory and maps each
+    profile to agent_id ``vlbeau-<name>``. If ``<hermes-root>/.env`` exists, it
+    is mapped to :data:`ROOT_PROFILE_AGENT_ID` (``vlbeau-opus``).
+
+    Profiles without both ``TELEGRAM_BOT_TOKEN`` and ``TELEGRAM_HOME_CHANNEL``
+    set are skipped silently — the command never fails on a partial environment.
+    """
+    profiles_root = Path(_expand(hermes_profiles))
+    if not profiles_root.is_dir():
+        console.print(f"[red]error:[/red] Hermes profiles directory not found: {profiles_root}")
+        raise typer.Exit(code=2)
+
+    registry: dict[str, dict[str, str]] = {}
+
+    # Root .env → vlbeau-opus (if present)
+    root_env_path = Path(_expand(hermes_root)) / ".env"
+    if root_env_path.is_file():
+        entry = _entry_from_env(_parse_env_file(root_env_path))
+        if entry:
+            registry[ROOT_PROFILE_AGENT_ID] = entry
+
+    # One entry per profile subdirectory
+    for profile_dir in sorted(profiles_root.iterdir()):
+        if not profile_dir.is_dir():
+            continue
+        env_path = profile_dir / ".env"
+        if not env_path.is_file():
+            continue
+        entry = _entry_from_env(_parse_env_file(env_path))
+        if not entry:
+            continue
+        agent_id = f"{AGENT_ID_PREFIX}{profile_dir.name}"
+        if not AGENT_ID_PATTERN.match(agent_id):
+            console.print(f"[yellow]skip[/yellow] {agent_id} (invalid id)")
+            continue
+        registry[agent_id] = entry
+
+    out_path = Path(_expand(output))
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(registry, indent=2) + "\n", encoding="utf-8")
+
+    if not registry:
+        console.print(
+            f"[yellow]No wake entries found — wrote empty registry to {out_path}[/yellow]"
+        )
+        return
+
+    table = Table(title=f"Wake registry ({len(registry)} agent(s)) → {out_path}")
+    table.add_column("agent_id")
+    table.add_column("chat_id")
+    for aid, entry in registry.items():
+        table.add_row(aid, entry["chat_id"])
     console.print(table)
 
 
