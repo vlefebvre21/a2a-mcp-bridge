@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 import re
@@ -31,8 +32,16 @@ DEFAULT_SIGNAL_DIR = "/tmp/a2a-signals"  # advisory notification files
 DEFAULT_WAKE_REGISTRY = "~/.a2a-wake-registry.json"
 
 
+@functools.lru_cache(maxsize=1)
 def _bridge_version() -> str:
-    """Return the installed a2a-mcp-bridge version, or 'unknown' if undiscoverable."""
+    """Return the installed a2a-mcp-bridge version, or 'unknown' if undiscoverable.
+
+    Cached with ``lru_cache(maxsize=1)``: the distribution metadata does not
+    change within a server process's lifetime, and ``importlib.metadata.version``
+    scans installed distributions on every call (~5-10 ms on a warm Python).
+    Caching makes :func:`agent_ping` effectively free to spam and avoids paying
+    the lookup twice at startup (log line + first tool call).
+    """
     try:
         return _pkg_version("a2a-mcp-bridge")
     except PackageNotFoundError:  # pragma: no cover — only hit in editable dev without install

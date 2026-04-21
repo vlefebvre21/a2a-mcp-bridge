@@ -81,6 +81,25 @@ def test_bridge_version_returns_string() -> None:
     assert v  # never empty
 
 
+def test_bridge_version_is_cached() -> None:
+    """v0.4.1 — _bridge_version must be lru_cache'd to avoid repeated metadata scans."""
+    from unittest.mock import patch
+
+    # Clear the cache so the patched _pkg_version is actually observed
+    server_module._bridge_version.cache_clear()
+    with patch(
+        "a2a_mcp_bridge.server._pkg_version", return_value="9.9.9-test"
+    ) as spy:
+        first = server_module._bridge_version()
+        second = server_module._bridge_version()
+        third = server_module._bridge_version()
+    assert first == second == third == "9.9.9-test"
+    # Cached: exactly one underlying lookup despite three calls
+    assert spy.call_count == 1
+    # Restore the real lookup for subsequent tests
+    server_module._bridge_version.cache_clear()
+
+
 def test_a2amcp_advertises_tools_changed_capability(tmp_path: Path) -> None:
     """The server handshake must declare tools.listChanged=True.
 
