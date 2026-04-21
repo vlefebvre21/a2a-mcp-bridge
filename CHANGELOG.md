@@ -19,7 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dynamic tool additions become a drop-in change without client restart.
 - Startup log now includes the running bridge version
   (`starting a2a-mcp-bridge ... version=0.4.0`).
-- 4 new tests (85 total).
+- 5 new tests (86 total).
+
+### Changed
+- **Telegram wake-up message format** — now names the reply-to `agent_id`
+  explicitly and shows the literal `agent_send(target="...")` call signature.
+  The previous v0.3 text could be misread by an LLM agent that confused the
+  A2A sender with a Telegram surface identity (bot username / chat peer),
+  causing replies to be routed to the wrong target. Regression test added.
 
 ### Documentation
 - `server.py` carries an extended module comment explaining why
