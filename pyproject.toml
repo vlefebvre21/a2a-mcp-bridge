@@ -1,6 +1,6 @@
 [project]
 name = "a2a-mcp-bridge"
-version = "0.3.0"
+version = "0.4.0"
 description = "MCP server for agent-to-agent messaging — A2A-style peer-to-peer bus exposed as MCP tools"
 readme = "README.md"
 license = { text = "MIT" }

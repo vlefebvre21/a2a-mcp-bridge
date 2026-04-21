@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-04-21
+
+### Added
+- **`agent_ping` tool** — returns `{"server", "version", "agent_id"}`. Useful
+  for detecting a stale stdio child after an `a2a-mcp-bridge` upgrade:
+  clients can call it at session start and compare the reported version
+  against the installed package to decide whether to prompt an operator
+  restart.
+- **`tools.listChanged` capability advertised** at handshake time via a
+  `FastMCP` subclass (`A2AMcp`) that injects
+  `NotificationOptions(tools_changed=True)`. The project still registers
+  tools statically, but the capability is declared so future plugin-style
+  dynamic tool additions become a drop-in change without client restart.
+- Startup log now includes the running bridge version
+  (`starting a2a-mcp-bridge ... version=0.4.0`).
+- 4 new tests (85 total).
+
+### Documentation
+- `server.py` carries an extended module comment explaining why
+  `list_changed` alone cannot solve the "client still talks to an old
+  stdio server after upgrade" problem, and how `agent_ping` complements it.
+
 ## [0.3.0] - 2026-04-21
 
 ### Added
