@@ -4,6 +4,15 @@
 
 **Status:** 🚧 Pre-alpha — spec phase.
 
+## Status disclaimer (v0.1)
+
+**Delivery is pull-only.** `agent_send` writes a row; the target agent only sees it when *something* calls `agent_inbox` on its behalf. There is no background polling, no push, no gateway wake-up. In practice this means:
+
+- If you DM an agent via its normal channel and ask it to check its inbox → works instantly.
+- If you expect agent B to spontaneously react to a message sent by agent A while B is idle → **won't happen until B is triggered by any other input**.
+
+A reference implementation of the "active push" model exists in [OpenClaw's `sessions-send-tool.a2a.ts`](https://github.com/openclaw/openclaw/blob/main/src/agents/tools/sessions-send-tool.a2a.ts). Porting that behavior to the MCP world is on the v0.2 roadmap.
+
 ## Why
 
 - **MCP (Anthropic)** is the standard for agent ↔ tool. ✅
@@ -26,6 +35,11 @@ Backed by SQLite by default (zero-dep, single file). No authentication in v0.1 (
 
 ## Planned (v0.2+)
 
+- **🔔 Real-time delivery** (currently pull-only — agents must poll `agent_inbox`).
+  Prior art: OpenClaw's `sessions-send-tool.a2a.ts` actively wakes up the target agent via the gateway — ours doesn't yet. Options being considered:
+  - Gateway-side background polling of `agent_inbox` every N seconds
+  - SSE / Streamable HTTP push to connected clients
+  - Optional wake-up webhook fired on `agent_send` toward the target's gateway
 - `agent_reply(message_id, ...)` + threaded conversations
 - Agent Cards (A2A-compliant metadata)
 - HTTP A2A endpoint in front of the MCP server
