@@ -143,3 +143,36 @@ class TestTelegramWakerWake:
         body = up.call_args.args[0].data.decode("utf-8")
         # The prompt should hint at agent_inbox so the recipient knows what to do
         assert "agent_inbox" in body
+
+    def test_message_names_reply_target_explicitly(
+        self, waker_registry: dict[str, WakeEntry]
+    ) -> None:
+        """Regression guard (v0.4.1): the wake-up text must make the reply-to
+        agent_id unambiguous so an LLM reading it cannot confuse it with a
+        Telegram bot username or chat peer.
+        """
+        waker = TelegramWaker(waker_registry)
+        fake_response = MagicMock()
+        fake_response.__enter__.return_value = fake_response
+        fake_response.read.return_value = b"{}"
+        fake_response.status = 200
+
+        with patch("a2a_mcp_bridge.wake.urlopen", return_value=fake_response) as up:
+            waker.wake("vlbeau-main", sender_id="vlbeau-glm51")
+
+        # The HTTP POST body is urlencoded form data; decode it to recover the text
+        import urllib.parse as _up
+
+        encoded = up.call_args.args[0].data.decode("utf-8")
+        parsed = dict(_up.parse_qsl(encoded))
+        text = parsed["text"]
+
+        # Must name the sender as a copy-pasteable agent_id
+        assert "vlbeau-glm51" in text
+        # Must mention both tools the recipient will use
+        assert "agent_inbox" in text
+        assert "agent_send" in text
+        # Must show the exact reply-to call signature
+        assert 'target="vlbeau-glm51"' in text
+        # Must label the sender as the reply target so LLMs don't guess
+        assert "reply-to" in text.lower()

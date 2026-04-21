@@ -6,10 +6,14 @@ import logging
 import os
 import re
 import sys
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.lowlevel import NotificationOptions
+from mcp.server.stdio import stdio_server
 
 from .signals import SignalDir
 from .store import Store
@@ -25,6 +29,14 @@ logger = logging.getLogger("a2a_mcp_bridge")
 AGENT_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 DEFAULT_SIGNAL_DIR = "/tmp/a2a-signals"  # advisory notification files
 DEFAULT_WAKE_REGISTRY = "~/.a2a-wake-registry.json"
+
+
+def _bridge_version() -> str:
+    """Return the installed a2a-mcp-bridge version, or 'unknown' if undiscoverable."""
+    try:
+        return _pkg_version("a2a-mcp-bridge")
+    except PackageNotFoundError:  # pragma: no cover — only hit in editable dev without install
+        return "unknown"
 
 
 def _resolve_agent_id() -> str:
@@ -77,6 +89,45 @@ def _load_waker() -> TelegramWaker | None:
     return TelegramWaker(registry)
 
 
+class A2AMcp(FastMCP):
+    """FastMCP subclass that advertises ``tools.listChanged`` capability.
+
+    Why this matters (v0.4 — Option A, future-proof):
+    ---------------------------------------------------
+    The MCP spec defines ``notifications/tools/list_changed`` to let a server
+    tell clients "my tool set changed, please re-fetch ``tools/list``". In this
+    project the tool set is registered statically at import time, so we never
+    actually emit this notification today. However, declaring the capability
+    early has two benefits:
+
+    1. MCP clients that observe the capability will subscribe to the
+       notification stream, so future dynamic tool additions (e.g. plugins,
+       per-session tool gating) become a drop-in change — no client-side
+       restart required.
+    2. The spec encourages servers to declare every capability they *might*
+       use; this keeps our handshake honest.
+
+    Note (documented caveat for Vincent's setup):
+    This does **not** solve the "client keeps talking to an old stdio server
+    after a version upgrade" issue. An upgraded binary only runs after the
+    parent process (Hermes gateway) restarts its stdio child. Emitting
+    ``list_changed`` from a new process reaches no one on the old channel.
+    The proper mitigation for that scenario is the new ``agent_ping`` tool
+    below, which lets a client query the server's running version and warn
+    the operator about a stale child.
+    """
+
+    async def run_stdio_async(self) -> None:
+        async with stdio_server() as (read_stream, write_stream):
+            await self._mcp_server.run(
+                read_stream,
+                write_stream,
+                self._mcp_server.create_initialization_options(
+                    notification_options=NotificationOptions(tools_changed=True),
+                ),
+            )
+
+
 def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None) -> FastMCP:
     store = Store(db_path)
     store.init_schema()
@@ -85,7 +136,7 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
     signal_dir = SignalDir(signal_dir_path or _resolve_signal_dir())
     waker = _load_waker()
 
-    mcp = FastMCP("a2a-mcp-bridge")
+    mcp = A2AMcp("a2a-mcp-bridge")
 
     @mcp.tool()
     def agent_send(
@@ -151,6 +202,28 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
             limit=limit,
         )
 
+    @mcp.tool()
+    def agent_ping() -> dict[str, Any]:
+        """Return the bridge's running version and the caller's agent_id.
+
+        Use this to detect a stale stdio child after an a2a-mcp-bridge upgrade.
+        The MCP ``tools/list_changed`` notification cannot help in that case
+        because the new binary only runs once the parent (Hermes gateway)
+        restarts its child process — the client is still talking to the old
+        server. Call ``agent_ping`` at session start and compare the returned
+        ``version`` against the installed package version (or a known-good
+        minimum) to decide whether to prompt the operator for a gateway
+        restart.
+
+        Returns:
+            {"version", "agent_id", "server": "a2a-mcp-bridge"}
+        """
+        return {
+            "server": "a2a-mcp-bridge",
+            "version": _bridge_version(),
+            "agent_id": agent_id,
+        }
+
     return mcp
 
 
@@ -163,10 +236,11 @@ def main() -> None:
     db_path = _resolve_db_path()
     signal_dir_path = _resolve_signal_dir()
     logger.info(
-        "starting a2a-mcp-bridge agent_id=%s db=%s signals=%s",
+        "starting a2a-mcp-bridge agent_id=%s db=%s signals=%s version=%s",
         agent_id,
         db_path,
         signal_dir_path,
+        _bridge_version(),
     )
     server = build_server(agent_id, db_path, signal_dir_path)
     server.run()
