@@ -4,6 +4,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-04-21
+
+Polish follow-up to v0.4.0, addressing the two nits flagged during the PR #3
+review (Issue #5). No behaviour change for clients.
+
+### Changed
+- **Performance** — `_bridge_version()` is now cached with
+  `@functools.lru_cache(maxsize=1)`. The package version is immutable within a
+  server process's lifetime, and `importlib.metadata.version` scans installed
+  distributions on each call (~5–10 ms warm). `agent_ping` is now free to spam.
+- **Dependency ceiling** — pin `mcp>=1.0,<2` in `pyproject.toml`. The
+  `A2AMcp.run_stdio_async` override mirrors the upstream implementation; a
+  major-version bump of the MCP SDK could silently drop lifecycle hooks we
+  haven't anticipated, so we gate on `<2` until the override is reviewed
+  against the new API.
+
+### Documentation
+- Extended docstring on `A2AMcp` with a `warning` block documenting the
+  sync requirement with upstream `FastMCP` and pointing at the upstream PR
+  path that would eventually obsolete the override (exposing
+  `notification_options` on `FastMCP.__init__`).
+
+### Tests
+- New regression test `test_bridge_version_is_cached` in `tests/test_server.py`
+  asserting exactly one underlying `_pkg_version` lookup across three calls.
+- Total: **87 tests** (was 86 at v0.4.0).
+
 ## [0.4.0] - 2026-04-21
 
 ### Added
