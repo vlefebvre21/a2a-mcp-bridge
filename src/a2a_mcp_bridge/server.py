@@ -124,9 +124,23 @@ class A2AMcp(FastMCP):
     The proper mitigation for that scenario is the new ``agent_ping`` tool
     below, which lets a client query the server's running version and warn
     the operator about a stale child.
+
+    .. warning::
+        :meth:`run_stdio_async` below mirrors the upstream
+        ``FastMCP.run_stdio_async`` implementation so we can pass a custom
+        ``notification_options`` to ``create_initialization_options``. If the
+        upstream ``mcp`` SDK adds lifecycle hooks (setup/teardown, shutdown
+        handlers, transport middleware) or changes the ``stdio_server`` ctx
+        manager signature in a future version, **this override will silently
+        skip them**. Keep the override in sync with upstream and enforce the
+        version ceiling via ``mcp>=1.0,<2`` in ``pyproject.toml``. A cleaner
+        long-term fix would be to land a PR against the MCP SDK exposing
+        ``notification_options`` as a ``FastMCP.__init__`` argument, after
+        which this override can be deleted.
     """
 
     async def run_stdio_async(self) -> None:
+        # Kept in sync with FastMCP.run_stdio_async (mcp>=1.0,<2). See class docstring.
         async with stdio_server() as (read_stream, write_stream):
             await self._mcp_server.run(
                 read_stream,

@@ -19,7 +19,12 @@ classifiers = [
 ]
 
 dependencies = [
-    "mcp>=1.0.0",
+    # NOTE: v0.4+ overrides FastMCP.run_stdio_async in src/a2a_mcp_bridge/server.py
+    # (class A2AMcp) to inject NotificationOptions(tools_changed=True). If the
+    # upstream mcp SDK changes run_stdio_async in a major version, our override
+    # will silently skip any new lifecycle hooks — so we cap at <2 until we
+    # re-review the override against the new API.
+    "mcp>=1.0,<2",
     "pydantic>=2.6",
     "typer>=0.12",
     "rich>=13.0",
