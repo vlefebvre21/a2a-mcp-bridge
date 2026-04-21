@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 import re
@@ -31,8 +32,16 @@ DEFAULT_SIGNAL_DIR = "/tmp/a2a-signals"  # advisory notification files
 DEFAULT_WAKE_REGISTRY = "~/.a2a-wake-registry.json"
 
 
+@functools.lru_cache(maxsize=1)
 def _bridge_version() -> str:
-    """Return the installed a2a-mcp-bridge version, or 'unknown' if undiscoverable."""
+    """Return the installed a2a-mcp-bridge version, or 'unknown' if undiscoverable.
+
+    Cached with ``lru_cache(maxsize=1)``: the distribution metadata does not
+    change within a server process's lifetime, and ``importlib.metadata.version``
+    scans installed distributions on every call (~5-10 ms on a warm Python).
+    Caching makes :func:`agent_ping` effectively free to spam and avoids paying
+    the lookup twice at startup (log line + first tool call).
+    """
     try:
         return _pkg_version("a2a-mcp-bridge")
     except PackageNotFoundError:  # pragma: no cover — only hit in editable dev without install
@@ -115,9 +124,23 @@ class A2AMcp(FastMCP):
     The proper mitigation for that scenario is the new ``agent_ping`` tool
     below, which lets a client query the server's running version and warn
     the operator about a stale child.
+
+    .. warning::
+        :meth:`run_stdio_async` below mirrors the upstream
+        ``FastMCP.run_stdio_async`` implementation so we can pass a custom
+        ``notification_options`` to ``create_initialization_options``. If the
+        upstream ``mcp`` SDK adds lifecycle hooks (setup/teardown, shutdown
+        handlers, transport middleware) or changes the ``stdio_server`` ctx
+        manager signature in a future version, **this override will silently
+        skip them**. Keep the override in sync with upstream and enforce the
+        version ceiling via ``mcp>=1.0,<2`` in ``pyproject.toml``. A cleaner
+        long-term fix would be to land a PR against the MCP SDK exposing
+        ``notification_options`` as a ``FastMCP.__init__`` argument, after
+        which this override can be deleted.
     """
 
     async def run_stdio_async(self) -> None:
+        # Kept in sync with FastMCP.run_stdio_async (mcp>=1.0,<2). See class docstring.
         async with stdio_server() as (read_stream, write_stream):
             await self._mcp_server.run(
                 read_stream,
