@@ -19,10 +19,12 @@ from .tools import (
     tool_agent_send,
     tool_agent_subscribe,
 )
+from .wake import TelegramWaker, load_registry
 
 logger = logging.getLogger("a2a_mcp_bridge")
 AGENT_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 DEFAULT_SIGNAL_DIR = "/tmp/a2a-signals"  # advisory notification files
+DEFAULT_WAKE_REGISTRY = "~/.a2a-wake-registry.json"
 
 
 def _resolve_agent_id() -> str:
@@ -52,12 +54,36 @@ def _resolve_signal_dir() -> str:
     return str(Path(raw).expanduser())
 
 
+def _resolve_wake_registry_path() -> str:
+    raw = os.environ.get("A2A_WAKE_REGISTRY", DEFAULT_WAKE_REGISTRY)
+    return str(Path(raw).expanduser())
+
+
+def _load_waker() -> TelegramWaker | None:
+    """Load the Telegram wake-up registry, returning ``None`` if unavailable.
+
+    Never raises: a missing or malformed registry logs a warning and disables
+    wake-up instead of blocking server startup.
+    """
+    path = _resolve_wake_registry_path()
+    try:
+        registry = load_registry(path)
+    except ValueError as exc:
+        logger.warning("wake registry %s is malformed, disabling wake-up: %s", path, exc)
+        return None
+    if not registry:
+        return None
+    logger.info("wake registry loaded: %d agent(s) from %s", len(registry), path)
+    return TelegramWaker(registry)
+
+
 def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None) -> FastMCP:
     store = Store(db_path)
     store.init_schema()
     store.upsert_agent(agent_id)
 
     signal_dir = SignalDir(signal_dir_path or _resolve_signal_dir())
+    waker = _load_waker()
 
     mcp = FastMCP("a2a-mcp-bridge")
 
@@ -79,8 +105,11 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
 
         Side effect (v0.2): writes a signal file to `A2A_SIGNAL_DIR` so that any
         agent long-polling via `agent_subscribe` wakes up immediately.
+
+        Side effect (v0.3): if `A2A_WAKE_REGISTRY` points at a valid registry
+        and the recipient is listed, fires a Telegram prompt to their bot.
         """
-        return tool_agent_send(store, agent_id, target, message, metadata, signal_dir)
+        return tool_agent_send(store, agent_id, target, message, metadata, signal_dir, waker)
 
     @mcp.tool()
     def agent_inbox(limit: int = 10, unread_only: bool = True) -> dict[str, Any]:
