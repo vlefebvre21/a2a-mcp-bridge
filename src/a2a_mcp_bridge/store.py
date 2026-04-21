@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -33,7 +33,7 @@ class Store:
     # -- agents ------------------------------------------------------------
 
     def upsert_agent(self, agent_id: str, metadata: dict[str, Any] | None = None) -> None:
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         self._conn.execute(
             """
             INSERT INTO agents (id, first_seen_at, last_seen_at, metadata)
@@ -44,9 +44,7 @@ class Store:
         )
 
     def list_agents(self, active_within_days: int = 7) -> list[AgentRecord]:
-        cutoff = (
-            datetime.now(timezone.utc) - timedelta(days=active_within_days)
-        ).isoformat()
+        cutoff = (datetime.now(UTC) - timedelta(days=active_within_days)).isoformat()
         rows = self._conn.execute(
             """
             SELECT id, first_seen_at, last_seen_at
@@ -84,18 +82,14 @@ class Store:
         if metadata is not None:
             metadata_json = json.dumps(metadata, separators=(",", ":"))
             if len(metadata_json.encode("utf-8")) > MAX_METADATA_BYTES:
-                raise ValueError(
-                    f"METADATA_TOO_LARGE: metadata exceeds {MAX_METADATA_BYTES} bytes"
-                )
+                raise ValueError(f"METADATA_TOO_LARGE: metadata exceeds {MAX_METADATA_BYTES} bytes")
 
-        exists = self._conn.execute(
-            "SELECT 1 FROM agents WHERE id = ?", (recipient,)
-        ).fetchone()
+        exists = self._conn.execute("SELECT 1 FROM agents WHERE id = ?", (recipient,)).fetchone()
         if not exists:
             raise ValueError(f"TARGET_UNKNOWN: {recipient}")
 
         message_id = uuid.uuid4().hex
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         self._conn.execute(
             """
             INSERT INTO messages (id, sender_id, recipient_id, body, metadata, created_at)
@@ -127,7 +121,7 @@ class Store:
                     (agent_id, limit),
                 ).fetchall()
                 if rows:
-                    now = datetime.now(timezone.utc).isoformat()
+                    now = datetime.now(UTC).isoformat()
                     placeholders = ",".join("?" * len(rows))
                     self._conn.execute(
                         f"UPDATE messages SET read_at = ? WHERE id IN ({placeholders})",

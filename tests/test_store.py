@@ -1,3 +1,5 @@
+import pytest
+
 from a2a_mcp_bridge.store import Store
 
 
@@ -30,9 +32,6 @@ class TestAgentLifecycle:
         )
         active = store.list_agents(active_within_days=7)
         assert "stale" not in [a.agent_id for a in active]
-
-
-import pytest
 
 
 class TestMessaging:
@@ -74,6 +73,7 @@ class TestMessaging:
 
     def test_send_rejects_oversized_body(self, store: Store) -> None:
         from a2a_mcp_bridge.models import MAX_BODY_BYTES
+
         store.upsert_agent("alice")
         store.upsert_agent("bob")
         with pytest.raises(ValueError, match="MESSAGE_TOO_LARGE"):

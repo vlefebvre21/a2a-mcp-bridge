@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP  # type: ignore[import-not-found]
+from mcp.server.fastmcp import FastMCP
 
 from .store import Store
 from .tools import tool_agent_inbox, tool_agent_list, tool_agent_send
@@ -28,8 +28,7 @@ def _resolve_agent_id() -> str:
         sys.exit(2)
     if not AGENT_ID_PATTERN.match(agent_id):
         print(
-            f"error: A2A_AGENT_ID={agent_id!r} invalid. Must match "
-            f"^[a-z0-9][a-z0-9_-]{{0,63}}$",
+            f"error: A2A_AGENT_ID={agent_id!r} invalid. Must match ^[a-z0-9][a-z0-9_-]{{0,63}}$",
             file=sys.stderr,
         )
         sys.exit(2)

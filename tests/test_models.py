@@ -1,13 +1,14 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
 import pytest
 from pydantic import ValidationError
+
 from a2a_mcp_bridge.models import (
+    MAX_BODY_BYTES,
     AgentId,
     AgentRecord,
     Message,
     SendResult,
-    MAX_BODY_BYTES,
-    MAX_METADATA_BYTES,
 )
 
 
@@ -30,7 +31,7 @@ class TestMessage:
             "recipient_id": "bob",
             "body": "hello",
             "metadata": None,
-            "created_at": datetime.now(timezone.utc),
+            "created_at": datetime.now(UTC),
             "read_at": None,
         }
 
@@ -54,7 +55,7 @@ class TestMessage:
 
 class TestAgentRecord:
     def test_valid_record(self):
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         rec = AgentRecord(
             agent_id="a",
             first_seen_at=now,
@@ -68,6 +69,6 @@ class TestAgentRecord:
 
 class TestSendResult:
     def test_valid(self):
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         r = SendResult(message_id="01HXYZ", sent_at=now, recipient="bob")
         assert r.recipient == "bob"
