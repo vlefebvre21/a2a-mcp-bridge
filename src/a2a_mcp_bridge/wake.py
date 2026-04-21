@@ -81,10 +81,17 @@ def load_registry(path: str) -> dict[str, WakeEntry]:
 
 
 def _format_message(sender_id: str) -> str:
-    """Short, direct Telegram wake-up message. Kept under 200 chars."""
+    """Explicit wake-up Telegram message for LLM agents.
+
+    The format names the reply-target explicitly so the receiving agent
+    (an LLM reading the Telegram text) cannot confuse the A2A ``sender_id``
+    with any surface-level Telegram identity (bot username, chat peer, etc.).
+    """
     return (
-        f"Message A2A de {sender_id} : consulte ton inbox avec agent_inbox "
-        f"et réponds via agent_send."
+        "Nouveau message A2A reçu.\n"
+        f"- sender (reply-to) : {sender_id}\n"
+        "- Pour lire          : agent_inbox()\n"
+        f'- Pour répondre      : agent_send(target="{sender_id}", message="...")'
     )
 
 
