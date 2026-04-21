@@ -2,16 +2,7 @@
 
 > MCP server that lets AI agents message each other — A2A-style peer-to-peer communication, exposed as MCP tools.
 
-**Status:** 🚧 Pre-alpha — spec phase.
-
-## Status disclaimer (v0.1)
-
-**Delivery is pull-only.** `agent_send` writes a row; the target agent only sees it when *something* calls `agent_inbox` on its behalf. There is no background polling, no push, no gateway wake-up. In practice this means:
-
-- If you DM an agent via its normal channel and ask it to check its inbox → works instantly.
-- If you expect agent B to spontaneously react to a message sent by agent A while B is idle → **won't happen until B is triggered by any other input**.
-
-A reference implementation of the "active push" model exists in [OpenClaw's `sessions-send-tool.a2a.ts`](https://github.com/openclaw/openclaw/blob/main/src/agents/tools/sessions-send-tool.a2a.ts). Porting that behavior to the MCP world is on the v0.2 roadmap.
+**Status:** v0.4.1 — usable in production. Not yet published to PyPI; install from GitHub.
 
 ## Why
 
@@ -19,59 +10,86 @@ A reference implementation of the "active push" model exists in [OpenClaw's `ses
 - **A2A (Google / Linux Foundation)** is the emerging standard for agent ↔ agent. ✅
 - But there's a gap: most MCP-native agents (Claude Desktop, Hermes, Cursor, etc.) don't speak A2A yet.
 
-`a2a-mcp-bridge` is a lightweight MCP server that gives any MCP-capable agent a simple inbox/send API to talk to other agents registered on the same bus. Think of it as "Postfix for AI agents" but stateless-ish and MCP-native.
+`a2a-mcp-bridge` is a lightweight MCP server that gives any MCP-capable agent a
+simple inbox / send / subscribe API to talk to other agents registered on the
+same bus. Think of it as "Postfix for AI agents" but stateless-ish, MCP-native,
+and SQLite-backed.
 
-## What it does (v0.1)
+## What it does
 
-Three MCP tools:
+Five MCP tools, all stable since v0.4:
 
 | Tool | Description |
 |---|---|
-| `agent_send(target, message)` | Drop a message in another agent's inbox. Returns a `message_id`. |
-| `agent_inbox(limit=10, unread_only=true)` | Read messages addressed to the calling agent. Marks them as read. |
-| `agent_list()` | List agents registered on the bus, with their capabilities. |
+| `agent_send(target, message, metadata=None)` | Drop a message in another agent's inbox. Returns a `message_id`. Fires a real-time signal and an optional Telegram wake-up toward the recipient. |
+| `agent_inbox(limit=10, unread_only=True)` | Read messages addressed to the calling agent. Atomically marks them as read when `unread_only=True`. |
+| `agent_list(active_within_days=7)` | List agents seen on the bus in the given window, with their capabilities and last-seen timestamps. |
+| `agent_subscribe(timeout_seconds=30, limit=10)` | Long-poll primitive: blocks up to `timeout_seconds` (server-capped at 55 s) waiting for new messages. Returns instantly if messages are already pending. |
+| `agent_ping()` | Returns `{"server", "version", "agent_id"}`. Useful to detect a stale stdio child after a bridge upgrade. |
 
-Backed by SQLite by default (zero-dep, single file). No authentication in v0.1 (trust the local network / use it on a private machine or behind a tunnel).
+Backed by SQLite by default (zero-dep, single file). No authentication (trust
+the local filesystem / use it on a private machine or behind a tunnel).
 
-## Planned (v0.2+)
+## Real-time delivery
 
-- **🔔 Real-time delivery** (currently pull-only — agents must poll `agent_inbox`).
-  Prior art: OpenClaw's `sessions-send-tool.a2a.ts` actively wakes up the target agent via the gateway — ours doesn't yet. Options being considered:
-  - Gateway-side background polling of `agent_inbox` every N seconds
-  - SSE / Streamable HTTP push to connected clients
-  - Optional wake-up webhook fired on `agent_send` toward the target's gateway
-- `agent_reply(message_id, ...)` + threaded conversations
-- Agent Cards (A2A-compliant metadata)
-- HTTP A2A endpoint in front of the MCP server
-- Optional Redis / Postgres backends for multi-host deployments
-- Allowlist + token-based auth
-- Streaming message delivery (SSE)
+Delivery is **push + pull hybrid** since v0.2. The authoritative store is
+always the SQLite file, but two advisory mechanisms wake consumers up:
+
+1. **Signal files** (`v0.2+`) — every `agent_send` writes
+   `$A2A_SIGNAL_DIR/<recipient>.notify` (default `/tmp/a2a-signals/`). Any
+   agent blocked in `agent_subscribe` wakes up immediately.
+2. **Telegram wake-up** (`v0.3+`) — if the recipient is listed in the wake
+   registry (see below), the bridge also POSTs a short prompt to the
+   recipient's Telegram bot so their gateway actually *processes* the new
+   message instead of sitting idle. Best-effort: any failure (missing entry,
+   HTTP error) is logged and never blocks the SQLite write.
+
+### Wake registry (optional)
+
+```bash
+# Build a registry from your ~/.hermes/profiles/*/.env files
+a2a-mcp-bridge wake-registry init
+
+# Override the path via env var if you want
+export A2A_WAKE_REGISTRY=~/.a2a-wake-registry.json
+```
+
+Each profile that defines `TELEGRAM_BOT_TOKEN` + `TELEGRAM_HOME_CHANNEL` is
+registered as `vlbeau-<profile>`; `~/.hermes/.env` maps to `vlbeau-opus`.
+Profiles with incomplete env are skipped silently.
 
 ## Quick start
 
-> Not published yet — see the [Plan](./docs/plans/2026-04-21-v0.1.md) for build progress.
+### Install from GitHub (recommended)
 
 ```bash
-# Install (future)
-pipx install a2a-mcp-bridge
+# With uv (fastest)
+uv tool install --from git+https://github.com/vlefebvre21/a2a-mcp-bridge a2a-mcp-bridge
 
-# Run the bus
-a2a-mcp-bridge serve --db ~/.a2a-bus.sqlite
-
-# Connect from Claude Desktop / Hermes / Cursor via MCP config
-# (see docs/mcp-client-setup.md once v0.1 ships)
+# With pipx
+pipx install git+https://github.com/vlefebvre21/a2a-mcp-bridge
 ```
 
-## Getting started with Claude Desktop
+### Initialize the bus
 
-Add this snippet to your Claude Desktop config
-(`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS,
-`%APPDATA%\Claude\claude_desktop_config.json` on Windows):
+```bash
+a2a-mcp-bridge init --db ~/.a2a-bus.sqlite
+```
+
+### Wire it to an MCP client
+
+Add this to your client's MCP config. Each agent **must** set its own
+`A2A_AGENT_ID`; the bridge refuses to start without one.
+
+#### Claude Desktop
+
+`~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or
+`%APPDATA%\Claude\claude_desktop_config.json` (Windows):
 
 ```jsonc
 {
   "mcpServers": {
-    "a2a-bus": {
+    "a2a": {
       "command": "a2a-mcp-bridge",
       "args": ["serve"],
       "env": {
@@ -83,16 +101,96 @@ Add this snippet to your Claude Desktop config
 }
 ```
 
-Restart Claude Desktop. The three tools `agent_send`, `agent_inbox`, and
-`agent_list` become available. Any other MCP-capable agent pointed at the same
-`A2A_DB_PATH` (with its own `A2A_AGENT_ID`) can exchange messages with you.
+#### Hermes (or any MCP-capable agent)
+
+Same shape — point `command` at the `a2a-mcp-bridge` entry point installed by
+`uv tool install`, set a distinct `A2A_AGENT_ID` per profile, and share the
+same `A2A_DB_PATH`.
+
+Restart the client. The five tools (`agent_send`, `agent_inbox`, `agent_list`,
+`agent_subscribe`, `agent_ping`) become available. Any other MCP-capable
+agent pointed at the same `A2A_DB_PATH` (with its own `A2A_AGENT_ID`) can
+exchange messages with you.
+
+### Pre-register agents (optional)
+
+By default an agent is registered on the bus at its first tool call. To
+pre-populate:
+
+```bash
+# Single agent
+a2a-mcp-bridge register --agent-id vlbeau-main
+
+# All Hermes profiles at once (→ vlbeau-<profile>)
+a2a-mcp-bridge register --all --hermes-profiles ~/.hermes/profiles
+```
+
+## Environment variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `A2A_AGENT_ID` | *required* | Identity this process advertises on the bus. |
+| `A2A_DB_PATH` | `./a2a-bus.sqlite` | SQLite file (shared by all agents on the bus). |
+| `A2A_SIGNAL_DIR` | `/tmp/a2a-signals` | Directory used by `agent_subscribe` for real-time wake-ups. |
+| `A2A_WAKE_REGISTRY` | `~/.a2a-wake-registry.json` | JSON map `agent_id → {bot_token, chat_id}` for Telegram wake-up. Missing/invalid file → feature silently disabled. |
+
+## CLI reference
+
+```
+a2a-mcp-bridge serve              # run the MCP stdio server
+a2a-mcp-bridge init               # initialize the SQLite schema
+a2a-mcp-bridge register [...]     # pre-register one or all agents
+a2a-mcp-bridge agents list        # show agents seen on the bus
+a2a-mcp-bridge messages tail      # tail recent messages
+a2a-mcp-bridge wake-registry init # build the Telegram wake registry from ~/.hermes
+```
+
+## Roadmap
+
+Shipped so far:
+
+- **v0.1** — Three MCP tools, SQLite store, Typer CLI, CI on 3.11 / 3.12 / 3.13.
+- **v0.2** — Signal-file real-time delivery + `agent_subscribe` + `register` CLI.
+- **v0.3** — Telegram wake-up on `agent_send` + `wake-registry init` CLI.
+- **v0.4** — `agent_ping` tool + `tools.listChanged` capability advertised at handshake.
+- **v0.4.1** — `lru_cache` on version lookup, `mcp<2` dependency ceiling.
+
+Planned:
+
+- **v0.4.2** — Per-thread Telegram wake-up (forum topics / `message_thread_id`).
+  Tracked in [Issue #4](https://github.com/vlefebvre21/a2a-mcp-bridge/issues/4).
+- **v0.5** — Observability (per-tool stats, structured JSON logs).
+- **Later** — Agent Cards (A2A-compliant metadata), HTTP A2A endpoint in front
+  of the MCP server, allowlist + token-based auth, optional Redis / Postgres
+  backend for multi-host deployments, `agent_reply` + threaded conversations.
 
 ## Project ethos
 
-- **Minimal.** No framework lock-in. Pure MCP + SQLite.
+- **Minimal.** No framework lock-in. Pure MCP + stdlib + SQLite. Zero new
+  runtime deps added since v0.1 (wake-up uses `urllib.request`).
 - **Standards-first.** When A2A defines a primitive, we map to it. No NIH.
-- **Multi-agent, multi-host.** Designed for the case where you run 2+ AI agents across different machines and want them to coordinate.
-- **Auditable.** All messages stored as plain rows in SQLite. `sqlite3 bus.db "SELECT * FROM messages"` just works.
+- **Multi-agent, multi-host.** Designed for the case where you run 2+ AI
+  agents across different machines / profiles and want them to coordinate.
+- **Auditable.** All messages stored as plain rows in SQLite.
+  `sqlite3 bus.db "SELECT * FROM messages"` just works.
+- **Backwards compatible.** Tool signatures are frozen across minor versions.
+  v0.4.x clients can still talk to a v0.1.x store, and vice versa.
+
+## Development
+
+```bash
+git clone https://github.com/vlefebvre21/a2a-mcp-bridge
+cd a2a-mcp-bridge
+uv venv && source .venv/bin/activate
+uv pip install -e ".[dev]"
+
+pytest -q              # 87 tests, ≥85% coverage gate
+ruff check src/ tests/ # lint
+mypy src/              # strict type-check
+```
+
+See [docs/spec/v0.1.md](./docs/spec/v0.1.md) for the original contract and
+[CHANGELOG.md](./CHANGELOG.md) for the full release history.
 
 ## License
 
@@ -102,4 +200,5 @@ MIT — see [LICENSE](./LICENSE).
 
 - [Model Context Protocol](https://modelcontextprotocol.io) (Anthropic)
 - [A2A Protocol](https://github.com/a2aproject) (Google / Linux Foundation)
-- OpenClaw's `sessions_send` tool (prior art for agent-to-agent messaging in an MCP-adjacent framework)
+- OpenClaw's `sessions_send` tool (prior art for agent-to-agent messaging
+  in an MCP-adjacent framework).
