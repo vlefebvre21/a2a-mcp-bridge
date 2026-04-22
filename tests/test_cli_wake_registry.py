@@ -190,3 +190,128 @@ def test_wake_registry_init_handles_quoted_values(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.stdout
     reg = json.loads(out.read_text())
     assert reg["vlbeau-main"] == {"bot_token": "111:MAIN", "chat_id": "1000"}
+
+
+# --------------------------------------------------------------------------- #
+# v0.4.2: thread_id preservation on re-init (approach "a" — intelligent merge)
+# --------------------------------------------------------------------------- #
+
+
+def test_wake_registry_init_preserves_thread_id_from_prior(tmp_path: Path) -> None:
+    """Re-running ``init`` must not wipe manually-added ``thread_id`` fields.
+
+    The operator typically adds ``thread_id`` (+ supergroup ``chat_id``) by
+    editing the JSON after the first ``init``. A second ``init`` must rebuild
+    ``bot_token`` from the latest Hermes ``.env`` while carrying the existing
+    ``thread_id`` forward — the source of truth for topic routing is the
+    registry, not the env.
+    """
+    hermes = tmp_path / ".hermes"
+    profiles = hermes / "profiles"
+    (profiles / "main").mkdir(parents=True)
+    _write_env(
+        profiles / "main" / ".env",
+        TELEGRAM_BOT_TOKEN="111:NEW",
+        TELEGRAM_HOME_CHANNEL="1000",
+    )
+
+    out = tmp_path / "wake.json"
+    # Seed a prior registry with thread_id
+    out.write_text(
+        json.dumps(
+            {
+                "vlbeau-main": {
+                    "bot_token": "111:OLD",
+                    "chat_id": "1000",
+                    "thread_id": 42,
+                }
+            }
+        )
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "wake-registry",
+            "init",
+            "--hermes-profiles",
+            str(profiles),
+            "--hermes-root",
+            str(hermes),
+            "--output",
+            str(out),
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+
+    reg = json.loads(out.read_text())
+    entry = reg["vlbeau-main"]
+    # bot_token refreshed from .env, but thread_id preserved from prior
+    assert entry["bot_token"] == "111:NEW"
+    assert entry["thread_id"] == 42
+
+
+def test_wake_registry_init_adds_no_thread_id_when_prior_has_none(
+    tmp_path: Path,
+) -> None:
+    """First-run baseline: without a prior registry, entries lack ``thread_id``."""
+    hermes = tmp_path / ".hermes"
+    profiles = hermes / "profiles"
+    (profiles / "main").mkdir(parents=True)
+    _write_env(
+        profiles / "main" / ".env",
+        TELEGRAM_BOT_TOKEN="111:MAIN",
+        TELEGRAM_HOME_CHANNEL="1000",
+    )
+
+    out = tmp_path / "wake.json"
+    result = runner.invoke(
+        app,
+        [
+            "wake-registry",
+            "init",
+            "--hermes-profiles",
+            str(profiles),
+            "--hermes-root",
+            str(hermes),
+            "--output",
+            str(out),
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+    reg = json.loads(out.read_text())
+    assert "thread_id" not in reg["vlbeau-main"]
+
+
+def test_wake_registry_init_ignores_corrupt_prior(tmp_path: Path) -> None:
+    """A malformed prior registry must not prevent regeneration — init is
+    meant to be idempotent and recoverable."""
+    hermes = tmp_path / ".hermes"
+    profiles = hermes / "profiles"
+    (profiles / "main").mkdir(parents=True)
+    _write_env(
+        profiles / "main" / ".env",
+        TELEGRAM_BOT_TOKEN="111:MAIN",
+        TELEGRAM_HOME_CHANNEL="1000",
+    )
+
+    out = tmp_path / "wake.json"
+    out.write_text("this is not json at all")
+
+    result = runner.invoke(
+        app,
+        [
+            "wake-registry",
+            "init",
+            "--hermes-profiles",
+            str(profiles),
+            "--hermes-root",
+            str(hermes),
+            "--output",
+            str(out),
+        ],
+    )
+    # Must still succeed, overwriting the corrupt file
+    assert result.exit_code == 0, result.stdout
+    reg = json.loads(out.read_text())
+    assert reg["vlbeau-main"]["bot_token"] == "111:MAIN"

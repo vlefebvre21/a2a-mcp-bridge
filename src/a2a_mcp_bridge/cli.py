@@ -7,6 +7,7 @@ import os
 import re
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 import typer
 from rich.console import Console
@@ -230,12 +231,55 @@ def _parse_env_file(path: Path) -> dict[str, str]:
     return values
 
 
-def _entry_from_env(env: dict[str, str]) -> dict[str, str] | None:
+def _entry_from_env(env: dict[str, str]) -> dict[str, Any] | None:
     token = env.get("TELEGRAM_BOT_TOKEN", "").strip()
     chat_id = env.get("TELEGRAM_HOME_CHANNEL", "").strip()
     if not token or not chat_id:
         return None
     return {"bot_token": token, "chat_id": chat_id}
+
+
+def _load_existing_registry(path: Path) -> dict[str, dict[str, Any]]:
+    """Read an existing registry file, or return ``{}`` if missing/invalid.
+
+    v0.4.2: used by ``wake-registry init`` to preserve manually-edited fields
+    (typically ``thread_id`` for forum-topic routing) across regenerations.
+    Silently tolerates missing / malformed files to keep ``init`` idempotent.
+    """
+    if not path.is_file():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {k: v for k, v in raw.items() if isinstance(v, dict)}
+
+
+# Keys that ``wake-registry init`` will preserve from the existing registry
+# when an entry already exists for the same agent_id. Everything else
+# (bot_token, chat_id) is overwritten from the Hermes ``.env`` source.
+_PRESERVE_KEYS = ("thread_id",)
+
+
+def _merge_with_existing(
+    new_entry: dict[str, Any],
+    existing_entry: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Merge a freshly-built env entry with its prior value, keeping overrides.
+
+    Any key listed in :data:`_PRESERVE_KEYS` found in the existing entry is
+    carried over, so operators can edit ``thread_id`` by hand without fearing
+    that the next ``wake-registry init`` will nuke their change.
+    """
+    if not existing_entry:
+        return new_entry
+    merged = dict(new_entry)
+    for key in _PRESERVE_KEYS:
+        if key in existing_entry:
+            merged[key] = existing_entry[key]
+    return merged
 
 
 @wake_registry_app.command("init")
@@ -271,14 +315,20 @@ def wake_registry_init(
         console.print(f"[red]error:[/red] Hermes profiles directory not found: {profiles_root}")
         raise typer.Exit(code=2)
 
-    registry: dict[str, dict[str, str]] = {}
+    out_path = Path(_expand(output))
+    # Preserve manually-edited fields (e.g. thread_id) from any prior registry.
+    prior = _load_existing_registry(out_path)
+
+    registry: dict[str, dict[str, Any]] = {}
 
     # Root .env → vlbeau-opus (if present)
     root_env_path = Path(_expand(hermes_root)) / ".env"
     if root_env_path.is_file():
         entry = _entry_from_env(_parse_env_file(root_env_path))
         if entry:
-            registry[ROOT_PROFILE_AGENT_ID] = entry
+            registry[ROOT_PROFILE_AGENT_ID] = _merge_with_existing(
+                entry, prior.get(ROOT_PROFILE_AGENT_ID)
+            )
 
     # One entry per profile subdirectory
     for profile_dir in sorted(profiles_root.iterdir()):
@@ -294,9 +344,8 @@ def wake_registry_init(
         if not AGENT_ID_PATTERN.match(agent_id):
             console.print(f"[yellow]skip[/yellow] {agent_id} (invalid id)")
             continue
-        registry[agent_id] = entry
+        registry[agent_id] = _merge_with_existing(entry, prior.get(agent_id))
 
-    out_path = Path(_expand(output))
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(registry, indent=2) + "\n", encoding="utf-8")
 
@@ -306,12 +355,23 @@ def wake_registry_init(
         )
         return
 
+    # Report how many thread_id overrides were preserved so operators notice
+    # when a merge actually did something useful.
+    preserved = sum(1 for e in registry.values() if "thread_id" in e)
+
     table = Table(title=f"Wake registry ({len(registry)} agent(s)) → {out_path}")
     table.add_column("agent_id")
     table.add_column("chat_id")
+    table.add_column("thread_id")
     for aid, entry in registry.items():
-        table.add_row(aid, entry["chat_id"])
+        tid = entry.get("thread_id")
+        table.add_row(aid, str(entry["chat_id"]), "—" if tid is None else str(tid))
     console.print(table)
+    if preserved:
+        console.print(
+            f"[dim]preserved thread_id on {preserved} entr"
+            f"{'y' if preserved == 1 else 'ies'} from prior registry[/dim]"
+        )
 
 
 if __name__ == "__main__":
