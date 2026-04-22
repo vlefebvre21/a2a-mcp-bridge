@@ -415,3 +415,231 @@ def test_legacy_format_emits_old_shape(tmp_path: Path) -> None:
     # Legacy shape: no top-level wake_bot_token, entries carry bot_token
     assert "wake_bot_token" not in payload
     assert payload["vlbeau-main"] == {"bot_token": "111:MAIN", "chat_id": "1000"}
+
+
+# --------------------------------------------------------------------------- #
+# v0.4.3.1: chat_id preservation across regenerations
+# --------------------------------------------------------------------------- #
+
+
+def test_wake_registry_init_preserves_chat_id_across_regenerations(
+    tmp_path: Path,
+) -> None:
+    """A chat_id overridden to a supergroup id must survive re-init.
+
+    Regression for v0.4.3 where a second ``wake-registry init`` would reset
+    every chat_id back to whatever lived in the profile's ``.env``, silently
+    breaking operators who had pointed the registry at a Telegram supergroup
+    (chat_id = -100...) whose id is not in each profile's .env.
+    """
+    hermes = tmp_path / ".hermes"
+    profiles = hermes / "profiles"
+    (profiles / "main").mkdir(parents=True)
+    (profiles / "glm51").mkdir()
+    # .env carries a DM chat_id, but operator has overridden both agents
+    # to point at a supergroup (-100...) in the registry.
+    _write_env(
+        profiles / "main" / ".env",
+        TELEGRAM_BOT_TOKEN="111:MAIN",
+        TELEGRAM_HOME_CHANNEL="1395012867",  # DM id
+    )
+    _write_env(
+        profiles / "glm51" / ".env",
+        TELEGRAM_BOT_TOKEN="222:GLM",
+        TELEGRAM_HOME_CHANNEL="1395012867",  # DM id
+    )
+
+    out = tmp_path / "wake.json"
+    # Seed: registry points at supergroup with thread_ids
+    out.write_text(
+        json.dumps(
+            {
+                "wake_bot_token": "111:MAIN",
+                "agents": {
+                    "vlbeau-main": {
+                        "chat_id": "-1003997069076",
+                        "thread_id": 5,
+                    },
+                    "vlbeau-glm51": {
+                        "chat_id": "-1003997069076",
+                        "thread_id": 7,
+                    },
+                },
+            }
+        )
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "wake-registry",
+            "init",
+            "--hermes-profiles",
+            str(profiles),
+            "--hermes-root",
+            str(hermes),
+            "--output",
+            str(out),
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(out.read_text())
+
+    # Both agents: chat_id preserved (supergroup), thread_id preserved, no DM leak.
+    assert payload["agents"]["vlbeau-main"]["chat_id"] == "-1003997069076"
+    assert payload["agents"]["vlbeau-main"]["thread_id"] == 5
+    assert payload["agents"]["vlbeau-glm51"]["chat_id"] == "-1003997069076"
+    assert payload["agents"]["vlbeau-glm51"]["thread_id"] == 7
+
+
+def test_wake_registry_init_reset_chat_ids_reads_from_env(tmp_path: Path) -> None:
+    """``--reset-chat-ids`` forces re-reading chat_id from each profile's .env.
+
+    thread_id overrides must still be preserved — only chat_id is re-read.
+    """
+    hermes = tmp_path / ".hermes"
+    profiles = hermes / "profiles"
+    (profiles / "main").mkdir(parents=True)
+    _write_env(
+        profiles / "main" / ".env",
+        TELEGRAM_BOT_TOKEN="111:MAIN",
+        TELEGRAM_HOME_CHANNEL="1395012867",  # DM id in .env
+    )
+
+    out = tmp_path / "wake.json"
+    out.write_text(
+        json.dumps(
+            {
+                "wake_bot_token": "111:MAIN",
+                "agents": {
+                    "vlbeau-main": {
+                        "chat_id": "-1003997069076",  # supergroup override
+                        "thread_id": 5,
+                    },
+                },
+            }
+        )
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "wake-registry",
+            "init",
+            "--hermes-profiles",
+            str(profiles),
+            "--hermes-root",
+            str(hermes),
+            "--output",
+            str(out),
+            "--reset-chat-ids",
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(out.read_text())
+
+    # chat_id reset to .env value, thread_id still preserved
+    assert payload["agents"]["vlbeau-main"]["chat_id"] == "1395012867"
+    assert payload["agents"]["vlbeau-main"]["thread_id"] == 5
+
+
+def test_wake_registry_init_chat_id_uses_env_for_new_agents(tmp_path: Path) -> None:
+    """An agent absent from the prior registry gets chat_id from its .env.
+
+    Preservation only triggers when the agent already existed — brand-new
+    profiles fall through to the regular .env-sourced behaviour.
+    """
+    hermes = tmp_path / ".hermes"
+    profiles = hermes / "profiles"
+    (profiles / "main").mkdir(parents=True)
+    (profiles / "newcomer").mkdir()
+    _write_env(
+        profiles / "main" / ".env",
+        TELEGRAM_BOT_TOKEN="111:MAIN",
+        TELEGRAM_HOME_CHANNEL="1395012867",
+    )
+    _write_env(
+        profiles / "newcomer" / ".env",
+        TELEGRAM_BOT_TOKEN="999:NEW",
+        TELEGRAM_HOME_CHANNEL="9999",
+    )
+
+    out = tmp_path / "wake.json"
+    # Prior registry has main at supergroup, but no entry for newcomer.
+    out.write_text(
+        json.dumps(
+            {
+                "wake_bot_token": "111:MAIN",
+                "agents": {
+                    "vlbeau-main": {"chat_id": "-1003997069076", "thread_id": 5},
+                },
+            }
+        )
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "wake-registry",
+            "init",
+            "--hermes-profiles",
+            str(profiles),
+            "--hermes-root",
+            str(hermes),
+            "--output",
+            str(out),
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(out.read_text())
+
+    # Existing agent preserved, newcomer gets .env chat_id.
+    assert payload["agents"]["vlbeau-main"]["chat_id"] == "-1003997069076"
+    assert payload["agents"]["vlbeau-newcomer"]["chat_id"] == "9999"
+
+
+def test_wake_registry_init_reports_preservation_in_stdout(tmp_path: Path) -> None:
+    """The CLI must mention chat_id preservation in its summary output.
+
+    Operators need a signal that the merge actually carried the override
+    forward, otherwise a typo in the prior registry silently propagates.
+    """
+    hermes = tmp_path / ".hermes"
+    profiles = hermes / "profiles"
+    (profiles / "main").mkdir(parents=True)
+    _write_env(
+        profiles / "main" / ".env",
+        TELEGRAM_BOT_TOKEN="111:MAIN",
+        TELEGRAM_HOME_CHANNEL="1000",
+    )
+
+    out = tmp_path / "wake.json"
+    out.write_text(
+        json.dumps(
+            {
+                "wake_bot_token": "111:MAIN",
+                "agents": {
+                    "vlbeau-main": {"chat_id": "-1003997069076", "thread_id": 5},
+                },
+            }
+        )
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "wake-registry",
+            "init",
+            "--hermes-profiles",
+            str(profiles),
+            "--hermes-root",
+            str(hermes),
+            "--output",
+            str(out),
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+    # stdout should mention chat_id preservation
+    assert "chat_id" in result.stdout
+    # And thread_id preservation
+    assert "thread_id" in result.stdout

@@ -4,6 +4,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.3.1] - 2026-04-22
+
+Hotfix for `wake-registry init` silently resetting `chat_id` overrides.
+
+### Fixed
+- **`wake-registry init` now preserves `chat_id` across regenerations**, not
+  just `thread_id`. In v0.4.3 a second invocation would re-read `chat_id`
+  from every profile's `.env` and overwrite any supergroup id the operator
+  had set in the registry. When profile `.env` files carry a DM chat id
+  (typical Hermes default) but the registry was pointing at a Telegram
+  supergroup (`-100...`), this turned every wake-up into a DM silently.
+  The merge now carries `chat_id` forward just like `thread_id`.
+
+### Added
+- **`wake-registry init --reset-chat-ids`** — opt-in flag to force the old
+  v0.4.3 behaviour, re-reading `chat_id` from each profile's `.env` even
+  when the existing registry already has one. `thread_id` is still
+  preserved in this mode.
+- The CLI summary now reports how many `chat_id` and `thread_id` entries
+  were preserved (vs. pulled from `.env`) so operators get a clear signal
+  that the merge actually carried overrides forward.
+
+### Migration
+No action required. A regular `a2a-bridge wake-registry init` under v0.4.3.1
+on a v0.4.3 registry will preserve your existing `chat_id` and `thread_id`
+overrides — which is what v0.4.3 _should_ have done. If you want the old
+reset-everything behaviour on purpose, add `--reset-chat-ids`.
+
 ## [0.4.3] - 2026-04-22
 
 Shared-wake-bot format. Resolves the self-wake dead-end introduced by
