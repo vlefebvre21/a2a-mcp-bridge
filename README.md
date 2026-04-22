@@ -131,6 +131,207 @@ The v0.4.4 bridge **rejects** legacy Telegram-based registries (logs a
 Telegram remains useful for visibility (topic-based supergroups still
 show agent-authored messages), but it is no longer a wake-up transport.
 
+## Deployment guide (v0.4.4+)
+
+This section is the canonical reference for running the bridge on a
+multi-agent Hermes setup. Skip it if you only have one agent.
+
+### Pre-requisites
+
+- One Hermes installation with `N` profiles (one per agent — `main`, `opus`, `glm51`, …)
+- Each profile has a unique `A2A_AGENT_ID` in its env (by convention `vlbeau-<profile>`)
+- A single shared SQLite bus file, readable by every gateway
+- `uv`, `jq`, `curl`, `openssl` available (for the commands below)
+
+### Port allocation — the one rule
+
+**Each Hermes profile's webhook adapter MUST listen on a unique localhost port.**
+Ports are only reached over loopback (`127.0.0.1`), so there's no firewall
+concern, but two profiles can't share the same port.
+
+Pick any free range and assign one port per profile. We use `8650-8658` for 9
+profiles. Keep the mapping stable — it's written into `config.yaml` and the
+wake registry, and regenerating the registry re-reads whatever ports are
+currently configured.
+
+Example mapping (9-agent fleet):
+
+| Profile | Port | `wake_webhook_url` |
+|---|---|---|
+| `deepseek` | 8650 | `http://127.0.0.1:8650/webhooks/wake` |
+| `main` | 8651 | `http://127.0.0.1:8651/webhooks/wake` |
+| `opus` | 8652 | `http://127.0.0.1:8652/webhooks/wake` |
+| `glm51` | 8653 | `http://127.0.0.1:8653/webhooks/wake` |
+| `gemini` | 8654 | `http://127.0.0.1:8654/webhooks/wake` |
+| `heavy` | 8655 | `http://127.0.0.1:8655/webhooks/wake` |
+| `mistral` | 8656 | `http://127.0.0.1:8656/webhooks/wake` |
+| `qwen36` | 8657 | `http://127.0.0.1:8657/webhooks/wake` |
+| `magent` | 8658 | `http://127.0.0.1:8658/webhooks/wake` |
+
+### Generating the shared HMAC secret
+
+Every gateway validates the wake-up signature with the **same** 64-character
+hex secret. Generate it once, reuse it in every profile:
+
+```bash
+openssl rand -hex 32 > /tmp/a2a-wake-secret.txt
+chmod 600 /tmp/a2a-wake-secret.txt
+SECRET=$(cat /tmp/a2a-wake-secret.txt)
+```
+
+Keep `$SECRET` out of version control. It ends up in two places per profile
+(see below), both `chmod 600`.
+
+### Per-profile setup (repeat for each agent)
+
+For each profile `$P` at port `$PORT`:
+
+**1. Patch `~/.hermes/profiles/$P/config.yaml`** — add the webhook adapter:
+
+```yaml
+platforms:
+  webhook:
+    enabled: true
+    extra:
+      host: "127.0.0.1"
+      port: <PORT>             # unique per profile (e.g. 8651)
+      rate_limit: 10           # requests/minute — tighter than Hermes default (30)
+      secret: "<SECRET>"       # shared 64-hex HMAC key
+```
+
+**2. Register the `wake` route** — this is what actually triggers the inbox
+triage session when the POST arrives:
+
+```bash
+HERMES_HOME=~/.hermes/profiles/$P \
+  hermes webhook subscribe wake \
+    --prompt "You have been woken up by the A2A bus. Check your inbox." \
+    --skills "a2a-inbox-triage" \
+    --secret "$SECRET" \
+    --deliver log
+```
+
+This writes `~/.hermes/profiles/$P/webhook_subscriptions.json`
+(`chmod 600`) with a single `wake` route entry. The `a2a-inbox-triage`
+skill must be available in that profile's skill tree — install it if
+missing (see [skills reference in a2a-workflow](./docs/)).
+
+**3. Restart the gateway** so the new adapter + route take effect.
+
+### Building the wake registry
+
+Once all profiles are configured and at least one has been restarted,
+generate the bridge-side registry:
+
+```bash
+a2a-mcp-bridge wake-registry init
+```
+
+This scans `~/.hermes/profiles/*/config.yaml` in alphabetical order, reads
+each `platforms.webhook.extra.{host,port}` plus the `secret` of the `wake`
+route in `webhook_subscriptions.json`, and emits
+`~/.a2a-wake-registry.json` (`chmod 600`). The first profile with a secret
+wins — if two profiles disagree, the CLI prints a warning and skips the
+outliers.
+
+Verification checklist after `init`:
+
+```bash
+jq 'keys' ~/.a2a-wake-registry.json
+#   → ["agents", "wake_webhook_secret"]
+
+jq '.agents | keys | length' ~/.a2a-wake-registry.json
+#   → 9 (or however many profiles are configured)
+
+stat -c '%a' ~/.a2a-wake-registry.json
+#   → 600
+
+# All 9 gateway webhook endpoints alive?
+for port in 8650 8651 8652 8653 8654 8655 8656 8657 8658; do
+  curl -s -o /dev/null -w "port $port -> %{http_code}\n" --max-time 3 \
+       http://127.0.0.1:$port/health
+done
+#   → nine "200" lines
+```
+
+### Configuration inventory — where things live
+
+After a full install, here's every file the bridge and Hermes touch,
+what each one contains, and who owns it:
+
+| Path | Purpose | Perms | Scope |
+|---|---|---|---|
+| `~/.a2a-bus.sqlite` | Authoritative message store (`messages` + `agents` tables) | 644 | Shared by all agents |
+| `/tmp/a2a-signals/<agent>.notify` | Signal file touched by `agent_send` — wakes up long-polling `agent_subscribe` consumers | 644 | One per recipient |
+| `~/.a2a-wake-registry.json` | Bridge → gateway routing: `{wake_webhook_secret, agents: {<id>: {wake_webhook_url}}}` | 600 | Single, user-wide |
+| `~/.hermes/profiles/<P>/config.yaml` | Hermes gateway config, holds the `platforms.webhook` block | 644 | Per profile |
+| `~/.hermes/profiles/<P>/webhook_subscriptions.json` | The `wake` route metadata: prompt, skills, HMAC secret, delivery mode | 600 | Per profile |
+| `~/.hermes/profiles/<P>/.env` | `A2A_AGENT_ID`, `TELEGRAM_*` (user visibility only now), etc. | 600 | Per profile |
+| `~/.a2a-wake-registry.v*.bak` | Backups auto-created on format migration | 600 | Optional |
+
+**Secret locations** (keep these `chmod 600`): the shared HMAC secret
+exists **three times** — once in the bridge registry, once in each
+profile's `config.yaml`, and once in each profile's
+`webhook_subscriptions.json`. If you rotate it, update all three.
+
+### Inspecting a running setup
+
+These are the commands we reach for first when something looks off:
+
+```bash
+# 1) Which registry format am I on? Expected in v0.4.4+:
+#    ["agents", "wake_webhook_secret"]. Anything else = stale or legacy.
+jq 'keys' ~/.a2a-wake-registry.json
+
+# 2) Every agent's wake URL, one line each:
+jq -r '.agents | to_entries[] | "\(.key)\t\(.value.wake_webhook_url)"' \
+   ~/.a2a-wake-registry.json | column -t
+
+# 3) Are the 9 gateway webhook endpoints alive?
+for port in 8650 8651 8652 8653 8654 8655 8656 8657 8658; do
+  printf "port %s -> " "$port"
+  curl -s -o /dev/null -w "%{http_code}\n" --max-time 3 \
+       http://127.0.0.1:$port/health
+done
+
+# 4) Who's been seen on the bus? (and how recently)
+sqlite3 -header -column ~/.a2a-bus.sqlite \
+  "SELECT id, last_seen_at FROM agents ORDER BY last_seen_at DESC;"
+
+# 5) Unread messages piling up somewhere? (the smoking gun for wake-up
+#    regressions — a high pending count + old last_seen_at == dead mailbox)
+sqlite3 -header -column ~/.a2a-bus.sqlite \
+  "SELECT recipient_id, COUNT(*) AS pending
+   FROM messages WHERE read_at IS NULL
+   GROUP BY recipient_id ORDER BY pending DESC;"
+
+# 6) Live-tail the last 20 messages on the bus
+sqlite3 ~/.a2a-bus.sqlite \
+  "SELECT datetime(created_at,'unixepoch','localtime') AS at,
+          sender_id, recipient_id, substr(body,1,60) AS snippet
+   FROM messages ORDER BY created_at DESC LIMIT 20;"
+
+# 7) Which bridge version is this session actually talking to?
+#    (After an upgrade, stdio children may still be on the old binary.)
+#    From any MCP session: call mcp_a2a_agent_ping() — returns {version, agent_id}.
+#    From shell:
+a2a-mcp-bridge --help | head -1
+
+# 8) Did the webhook secret get truncated? (Hermes secret-masking can
+#    silently turn a 64-hex into something like "<hex 14 chars>***")
+jq -r '.wake_webhook_secret | length' ~/.a2a-wake-registry.json
+#   → 64 expected; 14-or-so means the string was masked during an edit.
+```
+
+### Rollback
+
+The v0.4.4 `wake-registry init` automatically creates a `.bak` of the
+prior file on format migration. To roll back to the Telegram transport
+(v0.4.3.1), restore the backup, downgrade the bridge, and restart the
+gateways — but note that the Telegram wake-path never worked reliably
+in forum-topic supergroups, which is why v0.4.4 replaced it. Downgrading
+is usually not the right fix.
+
 ## Quick start
 
 ### Install from GitHub (recommended)
