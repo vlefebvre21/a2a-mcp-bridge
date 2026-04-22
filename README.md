@@ -206,15 +206,16 @@ triage session when the POST arrives:
 HERMES_HOME=~/.hermes/profiles/$P \
   hermes webhook subscribe wake \
     --prompt "You have been woken up by the A2A bus. Check your inbox." \
-    --skills "a2a-inbox-triage" \
+    --skills "a2a-workflow" \
     --secret "$SECRET" \
     --deliver log
 ```
 
 This writes `~/.hermes/profiles/$P/webhook_subscriptions.json`
-(`chmod 600`) with a single `wake` route entry. The `a2a-inbox-triage`
-skill must be available in that profile's skill tree — install it if
-missing (see [skills reference in a2a-workflow](./docs/)).
+(`chmod 600`) with a single `wake` route entry. The `a2a-workflow`
+skill (under `autonomous-ai-agents/`) ships with Hermes and documents
+the full A2A message loop — ensure it's enabled for the profile via
+`hermes skills` if the webhook handler reports "skill not found".
 
 **3. Restart the gateway** so the new adapter + route take effect.
 
@@ -267,7 +268,6 @@ what each one contains, and who owns it:
 | `~/.hermes/profiles/<P>/config.yaml` | Hermes gateway config, holds the `platforms.webhook` block | 644 | Per profile |
 | `~/.hermes/profiles/<P>/webhook_subscriptions.json` | The `wake` route metadata: prompt, skills, HMAC secret, delivery mode | 600 | Per profile |
 | `~/.hermes/profiles/<P>/.env` | `A2A_AGENT_ID`, `TELEGRAM_*` (user visibility only now), etc. | 600 | Per profile |
-| `~/.a2a-wake-registry.v*.bak` | Backups auto-created on format migration | 600 | Optional |
 
 **Secret locations** (keep these `chmod 600`): the shared HMAC secret
 exists **three times** — once in the bridge registry, once in each
@@ -295,6 +295,7 @@ for port in 8650 8651 8652 8653 8654 8655 8656 8657 8658; do
 done
 
 # 4) Who's been seen on the bus? (and how recently)
+#    Timestamps are ISO-8601 UTC strings — lexicographic sort works.
 sqlite3 -header -column ~/.a2a-bus.sqlite \
   "SELECT id, last_seen_at FROM agents ORDER BY last_seen_at DESC;"
 
@@ -306,9 +307,9 @@ sqlite3 -header -column ~/.a2a-bus.sqlite \
    GROUP BY recipient_id ORDER BY pending DESC;"
 
 # 6) Live-tail the last 20 messages on the bus
-sqlite3 ~/.a2a-bus.sqlite \
-  "SELECT datetime(created_at,'unixepoch','localtime') AS at,
-          sender_id, recipient_id, substr(body,1,60) AS snippet
+#    created_at is stored as an ISO-8601 string, so we keep it verbatim.
+sqlite3 -header -column ~/.a2a-bus.sqlite \
+  "SELECT created_at, sender_id, recipient_id, substr(body,1,60) AS snippet
    FROM messages ORDER BY created_at DESC LIMIT 20;"
 
 # 7) Which bridge version is this session actually talking to?
@@ -325,12 +326,51 @@ jq -r '.wake_webhook_secret | length' ~/.a2a-wake-registry.json
 
 ### Rollback
 
-The v0.4.4 `wake-registry init` automatically creates a `.bak` of the
-prior file on format migration. To roll back to the Telegram transport
-(v0.4.3.1), restore the backup, downgrade the bridge, and restart the
-gateways — but note that the Telegram wake-path never worked reliably
-in forum-topic supergroups, which is why v0.4.4 replaced it. Downgrading
-is usually not the right fix.
+`wake-registry init` **overwrites** any pre-existing registry — it does
+not auto-create a `.bak`. If you want a safety net before regenerating,
+copy the file yourself:
+
+```bash
+cp -a ~/.a2a-wake-registry.json ~/.a2a-wake-registry.json.bak
+```
+
+Downgrading to the Telegram transport (v0.4.3.1) is possible but rarely
+the right move: the Telegram wake-path never worked reliably in
+forum-topic supergroups (a bot never sees its own topic messages, and
+routing via a shared crier still left the recipient's gateway deaf),
+which is exactly why v0.4.4 replaced it. The usual fix for a wake
+failure is to run `wake-registry init` again and check the inspection
+commands above, not to roll back.
+
+### Troubleshooting — decision tree
+
+Symptom → first thing to check:
+
+- **Messages persist but recipient never answers.** Run command 5 — a
+  rising `pending` for that recipient with no change in its
+  `last_seen_at` means the wake never landed. Then:
+  - Command 3 (`/health`) — is the recipient's gateway even alive?
+  - Command 2 — does the registry still point at the right port?
+  - If both OK, tail the recipient gateway's log for `[webhook]` lines
+    (signature failure, rate-limit 429, or prompt-handler errors show
+    up there).
+- **Every wake logs a 401/403.** The HMAC secrets disagree. Re-run
+  `wake-registry init` so the registry picks up whatever secret is
+  currently in each profile's `webhook_subscriptions.json`. Then
+  command 8 — `length` must be 64.
+- **`wake-registry init` warns about a mismatched secret.** Two
+  profiles carry different `wake` route secrets. Pick one, re-run
+  `hermes webhook subscribe wake --secret "$SECRET"` on the outlier(s),
+  then regenerate the registry.
+- **Bridge logs show `legacy Telegram-based format … wake-up is
+  disabled`.** The registry is still in v0.3/v0.4.3 shape. Run
+  `wake-registry init` to migrate; the old content will be overwritten
+  with the v0.4.4 layout.
+- **`uv tool` or session is still on the old bridge binary after an
+  upgrade.** `uv tool install --force --reinstall a2a-mcp-bridge` and
+  restart any MCP client that spawned the stdio child (they don't
+  hot-reload). Verify with `mcp_a2a_agent_ping()` — the `version`
+  field must match what you just installed.
 
 ## Quick start
 
