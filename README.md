@@ -4,6 +4,29 @@
 
 **Status:** v0.4.4 — usable in production. Not yet published to PyPI; install from GitHub.
 
+> ### ⚠️ Known limitation: multi-session concurrency per profile
+>
+> In the current deployment model (Hermes + this bridge), a single
+> `agent_id` (a profile like `vlbeau-glm51`) may be served by **several
+> concurrent OS processes** at the same time — typically one per
+> spawn path (Telegram front-end, webhook wake-up, cron, CLI). Each of
+> these processes independently polls `agent_inbox` with
+> `unread_only=True`, which **atomically marks messages as read**.
+> Consequences:
+>
+> - Only one session receives any given message. The others never see it.
+> - Sessions don't share in-memory state, so the user can believe they
+>   are in a continuous conversation while critical replies are
+>   consumed by a sibling session that silently resolves the thread.
+> - Mutations of shared state (skills, memory, files) can race with no
+>   lock and no notification.
+>
+> If you plan to build a conversation-critical flow on top of this bridge,
+> **you must design around this property** — the bridge does not (yet)
+> guarantee that `agent_id` identifies a single conversational thread.
+> A v0.5 mitigation path is documented in
+> [ADR-001 — Multi-session concurrency](docs/adr/ADR-001-multi-session-concurrency.md).
+
 ## Why
 
 - **MCP (Anthropic)** is the standard for agent ↔ tool. ✅
@@ -554,7 +577,12 @@ Shipped so far:
 
 Planned:
 
-- **v0.5** — Observability (per-tool stats, structured JSON logs).
+- **v0.5** — Multi-session concurrency mitigations (see
+  [ADR-001](docs/adr/ADR-001-multi-session-concurrency.md)):
+  `agent_inbox_peek(since_ts)` for non-destructive reads, optional
+  `session_id` metadata on `agent_send`, session-tagged logs, clarified
+  tool docstrings. Plus observability (per-tool stats, structured JSON
+  logs).
 - **Later** — Agent Cards (A2A-compliant metadata), HTTP A2A endpoint in front
   of the MCP server, allowlist + token-based auth, optional Redis / Postgres
   backend for multi-host deployments, `agent_reply` + threaded conversations.
