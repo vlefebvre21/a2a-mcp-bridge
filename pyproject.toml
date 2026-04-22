@@ -1,6 +1,6 @@
 [project]
 name = "a2a-mcp-bridge"
-version = "0.4.3.1"
+version = "0.4.4"
 description = "MCP server for agent-to-agent messaging — A2A-style peer-to-peer bus exposed as MCP tools"
 readme = "README.md"
 license = { text = "MIT" }
@@ -28,6 +28,11 @@ dependencies = [
     "pydantic>=2.6",
     "typer>=0.12",
     "rich>=13.0",
+    # pyyaml is used by ``wake-registry init`` to parse Hermes profile
+    # config.yaml files when discovering per-profile webhook ports/secrets.
+    # Optional at runtime (the wake-up loop itself only reads the compiled
+    # JSON registry), but a hard dep of the init CLI.
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]

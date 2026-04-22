@@ -4,6 +4,94 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.4] - 2026-04-22
+
+**Major** — wake-up transport migrates from Telegram to local HTTP webhooks.
+
+v0.4.3 shipped a shared-wake-bot Telegram model that routed wake-ups
+through a single "crier" bot to work around the "a bot never sees its own
+messages" rule in supergroups. That fix delivered the wake-up message to
+the correct forum topic, but the recipient's Hermes gateway polls **its
+own** Telegram bot and therefore never received the update: the message
+landed in the topic without ever triggering the recipient's agent loop.
+
+v0.4.4 abandons Telegram for wake-up entirely. Each Hermes gateway
+exposes a local HTTP webhook endpoint (``http://127.0.0.1:<port>/webhooks/wake``)
+that triggers a real agent session when POSTed to. The bridge signs an
+HMAC-SHA256 JSON payload with a shared secret and POSTs directly to the
+recipient's endpoint, bypassing Telegram. The recipient's gateway
+validates the signature, spawns a session, and the agent reads its inbox.
+
+Telegram remains available for operators who want visibility into A2A
+traffic (topic-based supergroups still display messages posted by the
+Hermes agents themselves when they run), but it is no longer on the
+wake-up path.
+
+### Changed
+- **``wake.py``** — ``TelegramWaker`` replaced by ``WebhookWaker``. The
+  waker POSTs ``{"sender": ..., "target": ..., "source": "a2a-mcp-bridge"}``
+  as a compact JSON body, signed via HMAC-SHA256 under a shared secret,
+  to each recipient's configured ``wake_webhook_url``. Self-wake guard
+  and best-effort error swallowing are preserved unchanged.
+- **``load_registry``** returns ``(shared_secret, entries)`` with new
+  ``WakeEntry`` shape ``{wake_webhook_url: str}``.
+- **Registry format v0.4.4**::
+
+    {
+      "wake_webhook_secret": "<64-hex>",
+      "agents": {
+        "vlbeau-main":  {"wake_webhook_url": "http://127.0.0.1:8651/webhooks/wake"},
+        "vlbeau-glm51": {"wake_webhook_url": "http://127.0.0.1:8653/webhooks/wake"}
+      }
+    }
+
+- **``wake-registry init``** now reads each Hermes profile's
+  ``config.yaml`` (``platforms.webhook.{host, port, secret}``) and
+  ``webhook_subscriptions.json`` (per-route ``wake`` secret wins over
+  global, matching the adapter's resolution order). All profiles must
+  share the **same** webhook secret; divergent profiles are skipped with
+  a visible warning in the CLI summary.
+- **New dep** ``pyyaml>=6.0`` (needed by ``wake-registry init`` to read
+  profile configs).
+
+### Removed
+- ``TelegramWaker`` class (replaced by ``WebhookWaker``).
+- ``--legacy-format``, ``--wake-bot-profile``, ``--reset-chat-ids`` flags
+  on ``wake-registry init``. The v0.4.4 CLI has no legacy-compat path: a
+  pre-v0.4.4 registry is **detected** (``wake_bot_token`` or per-agent
+  ``bot_token`` keys), logged with a ``migrating`` banner, and
+  **overwritten** with a fresh v0.4.4 payload.
+
+### Fallback / error handling
+- Wake-up is best-effort (unchanged contract from v0.3+): ``agent_send``
+  persists to SQLite first, wakes second. A webhook POST failure logs a
+  ``WARNING`` and returns ``False`` — the message is still in the bus,
+  the recipient will see it on next poll or next wake.
+- A legacy-format registry under v0.4.4 disables wake-up (empty registry
+  returned from ``load_registry``, migration WARNING logged). The
+  bridge continues to store and deliver messages via SQLite + signals;
+  operators must run ``a2a-mcp-bridge wake-registry init`` to restore
+  wake-up.
+
+### Migration
+
+1. Upgrade the bridge: ``uv tool install --force a2a-mcp-bridge``
+2. Each gateway profile must have ``platforms.webhook.enabled: true``
+   in its ``config.yaml`` with a unique ``port`` and a ``secret``. The
+   same ``secret`` must be used across all profiles so they can share
+   the HMAC key.
+3. Run ``a2a-bridge wake-registry init`` to regenerate
+   ``~/.a2a-wake-registry.json`` in the v0.4.4 format.
+4. Restart gateways. The first wake after restart confirms the new
+   transport is live (``agent_inbox`` bumps ``last_seen_at`` for the
+   recipient within seconds of ``agent_send``).
+
+### Tests
+- 111/111 pass (+4 net vs v0.4.3.1). Full rewrite of ``test_wake.py`` and
+  ``test_cli_wake_registry.py`` against the webhook format; integration
+  tests verify persist-before-wake ordering and that legacy registries
+  don't crash ``build_server``.
+
 ## [0.4.3.1] - 2026-04-22
 
 Hotfix for `wake-registry init` silently resetting `chat_id` overrides.

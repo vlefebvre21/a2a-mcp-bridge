@@ -24,7 +24,7 @@ from .tools import (
     tool_agent_send,
     tool_agent_subscribe,
 )
-from .wake import TelegramWaker, load_registry
+from .wake import WebhookWaker, load_registry
 
 logger = logging.getLogger("a2a_mcp_bridge")
 AGENT_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
@@ -80,27 +80,28 @@ def _resolve_wake_registry_path() -> str:
     return str(Path(raw).expanduser())
 
 
-def _load_waker() -> TelegramWaker | None:
-    """Load the Telegram wake-up registry, returning ``None`` if unavailable.
+def _load_waker() -> WebhookWaker | None:
+    """Load the wake-up registry, returning ``None`` if unavailable.
 
     Never raises: a missing or malformed registry logs a warning and disables
-    wake-up instead of blocking server startup.
+    wake-up instead of blocking server startup. A legacy (pre-v0.4.4)
+    Telegram-based registry is detected upstream in ``load_registry`` and
+    surfaces here as an empty registry, logging a migration WARNING.
     """
     path = _resolve_wake_registry_path()
     try:
-        shared_token, registry = load_registry(path)
+        shared_secret, registry = load_registry(path)
     except ValueError as exc:
         logger.warning("wake registry %s is malformed, disabling wake-up: %s", path, exc)
         return None
     if not registry:
         return None
     logger.info(
-        "wake registry loaded: %d agent(s) from %s (mode=%s)",
+        "wake registry loaded: %d agent(s) from %s (transport=webhook)",
         len(registry),
         path,
-        "shared-bot" if shared_token else "per-agent",
     )
-    return TelegramWaker(registry, shared_token=shared_token)
+    return WebhookWaker(registry, shared_secret=shared_secret)
 
 
 class A2AMcp(FastMCP):

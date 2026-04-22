@@ -7,7 +7,7 @@ from typing import Any
 
 from .signals import SignalDir
 from .store import Store
-from .wake import TelegramWaker
+from .wake import WebhookWaker
 
 logger = logging.getLogger("a2a_mcp_bridge.tools")
 
@@ -23,7 +23,7 @@ def tool_agent_send(
     message: str,
     metadata: dict[str, Any] | None = None,
     signal_dir: SignalDir | None = None,
-    waker: TelegramWaker | None = None,
+    waker: WebhookWaker | None = None,
 ) -> dict[str, Any]:
     """Send a message from ``caller_id`` to ``target``.
 
@@ -31,8 +31,9 @@ def tool_agent_send(
 
     * ``signal_dir.notify(target)`` — touches ``<signal_dir>/<target>.notify``
       so any ``agent_subscribe`` long-poll on the recipient wakes up (v0.2).
-    * ``waker.wake(target, sender_id=caller_id)`` — sends a Telegram prompt to
-      the recipient's bot so its gateway processes the message (v0.3).
+    * ``waker.wake(target, sender_id=caller_id)`` — POSTs an HMAC-signed
+      webhook to the recipient's Hermes gateway, which spawns a real
+      agent session that reads the inbox (v0.4.4+).
 
     Both hooks are best-effort: failures are logged but never propagated — the
     authoritative record is always the SQLite store.

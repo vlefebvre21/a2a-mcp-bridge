@@ -1,4 +1,4 @@
-"""Tests for the ``wake-registry`` CLI commands."""
+"""Tests for the ``wake-registry init`` CLI command (v0.4.4 webhook format)."""
 
 from __future__ import annotations
 
@@ -12,185 +12,244 @@ from a2a_mcp_bridge.cli import app
 runner = CliRunner()
 
 
-def _write_env(path: Path, **values: str) -> None:
-    path.write_text(
-        "\n".join(f"{k}={v}" for k, v in values.items()) + "\n",
-        encoding="utf-8",
-    )
-
-
-# --------------------------------------------------------------------------- #
-# Default: v0.4.3+ shared-wake-bot format
-# --------------------------------------------------------------------------- #
-
-
-def test_wake_registry_init_defaults_to_shared_bot_format(tmp_path: Path) -> None:
-    """``init`` without flags must emit the shared-wake-bot JSON shape."""
-    hermes = tmp_path / ".hermes"
-    profiles = hermes / "profiles"
-    (profiles / "main").mkdir(parents=True)
-    (profiles / "glm51").mkdir()
-    _write_env(
-        profiles / "main" / ".env",
-        TELEGRAM_BOT_TOKEN="111:MAIN_WAKE_BOT",
-        TELEGRAM_HOME_CHANNEL="1000",
-    )
-    _write_env(
-        profiles / "glm51" / ".env",
-        TELEGRAM_BOT_TOKEN="222:GLM",  # should be dropped in new format
-        TELEGRAM_HOME_CHANNEL="2000",
-    )
-
-    out = tmp_path / "wake.json"
-    result = runner.invoke(
-        app,
-        [
-            "wake-registry",
-            "init",
-            "--hermes-profiles",
-            str(profiles),
-            "--hermes-root",
-            str(hermes),
-            "--output",
-            str(out),
-        ],
-    )
-    assert result.exit_code == 0, result.stdout
-
-    payload = json.loads(out.read_text())
-    # Top-level shape
-    assert payload["wake_bot_token"] == "111:MAIN_WAKE_BOT"
-    assert "agents" in payload
-    # Per-agent entries: chat_id yes, bot_token no
-    assert payload["agents"]["vlbeau-main"] == {"chat_id": "1000"}
-    assert payload["agents"]["vlbeau-glm51"] == {"chat_id": "2000"}
-    assert "bot_token" not in payload["agents"]["vlbeau-glm51"]
-
-
-def test_wake_registry_init_uses_custom_wake_bot_profile(tmp_path: Path) -> None:
-    """``--wake-bot-profile <name>`` sources the token from that profile."""
-    hermes = tmp_path / ".hermes"
-    profiles = hermes / "profiles"
-    (profiles / "main").mkdir(parents=True)
-    (profiles / "opus").mkdir()
-    _write_env(
-        profiles / "main" / ".env",
-        TELEGRAM_BOT_TOKEN="111:MAIN",
-        TELEGRAM_HOME_CHANNEL="1000",
-    )
-    _write_env(
-        profiles / "opus" / ".env",
-        TELEGRAM_BOT_TOKEN="999:OPUS_AS_WAKE_BOT",
-        TELEGRAM_HOME_CHANNEL="9000",
-    )
-
-    out = tmp_path / "wake.json"
-    result = runner.invoke(
-        app,
-        [
-            "wake-registry",
-            "init",
-            "--hermes-profiles",
-            str(profiles),
-            "--hermes-root",
-            str(hermes),
-            "--output",
-            str(out),
-            "--wake-bot-profile",
-            "opus",
-        ],
-    )
-    assert result.exit_code == 0, result.stdout
-    payload = json.loads(out.read_text())
-    assert payload["wake_bot_token"] == "999:OPUS_AS_WAKE_BOT"
-
-
-def test_wake_registry_init_errors_when_wake_bot_token_missing(tmp_path: Path) -> None:
-    """No wake-bot token + no prior registry ⇒ hard error (not silent)."""
-    hermes = tmp_path / ".hermes"
-    profiles = hermes / "profiles"
-    (profiles / "main").mkdir(parents=True)
-    # main has a channel but NO bot token — broken config
-    _write_env(profiles / "main" / ".env", TELEGRAM_HOME_CHANNEL="1000")
-
-    out = tmp_path / "wake.json"
-    result = runner.invoke(
-        app,
-        [
-            "wake-registry",
-            "init",
-            "--hermes-profiles",
-            str(profiles),
-            "--hermes-root",
-            str(hermes),
-            "--output",
-            str(out),
-        ],
-    )
-    assert result.exit_code != 0, result.stdout
-    assert "wake-bot token" in result.stdout.lower()
-
-
-def test_wake_registry_init_reuses_prior_wake_bot_token(tmp_path: Path) -> None:
-    """If the profile's .env has no token but the prior registry has one,
-    ``init`` must reuse it instead of erroring out."""
-    hermes = tmp_path / ".hermes"
-    profiles = hermes / "profiles"
-    (profiles / "main").mkdir(parents=True)
-    # No TELEGRAM_BOT_TOKEN in main.env
-    _write_env(profiles / "main" / ".env", TELEGRAM_HOME_CHANNEL="1000")
-
-    out = tmp_path / "wake.json"
-    # Seed a prior registry with a shared token
-    out.write_text(
-        json.dumps(
-            {"wake_bot_token": "PRIOR:TOKEN", "agents": {}}
-        )
-    )
-    result = runner.invoke(
-        app,
-        [
-            "wake-registry",
-            "init",
-            "--hermes-profiles",
-            str(profiles),
-            "--hermes-root",
-            str(hermes),
-            "--output",
-            str(out),
-        ],
-    )
-    assert result.exit_code == 0, result.stdout
-    payload = json.loads(out.read_text())
-    assert payload["wake_bot_token"] == "PRIOR:TOKEN"
-    assert payload["agents"]["vlbeau-main"]["chat_id"] == "1000"
-
-
-def test_wake_registry_init_preserves_thread_id_across_regenerations(
-    tmp_path: Path,
+def _write_webhook_profile(
+    profile_dir: Path,
+    *,
+    port: int,
+    secret: str,
+    host: str = "127.0.0.1",
+    enabled: bool = True,
+    rate_limit: int | None = None,
 ) -> None:
-    """thread_id overrides must survive re-init, even with the new format."""
+    """Create a minimal Hermes-style profile directory with a webhook config."""
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    # Minimal config.yaml covering just the webhook section — the real
+    # Hermes config is much richer, but only platforms.webhook matters here.
+    yaml_lines = [
+        "platforms:",
+        "  webhook:",
+        f"    enabled: {str(enabled).lower()}",
+        "    extra:",
+        f'      host: "{host}"',
+        f"      port: {port}",
+        f'      secret: "{secret}"',
+    ]
+    if rate_limit is not None:
+        yaml_lines.append(f"      rate_limit: {rate_limit}")
+    (profile_dir / "config.yaml").write_text(
+        "\n".join(yaml_lines) + "\n", encoding="utf-8"
+    )
+    # Also need a .env to match Hermes profile shape (parseable, any content)
+    (profile_dir / ".env").write_text("TELEGRAM_BOT_TOKEN=xxx\n", encoding="utf-8")
+
+
+def _write_subscription(
+    profile_dir: Path, *, route_secret: str, skills: list[str] | None = None
+) -> None:
+    """Create a webhook_subscriptions.json with a 'wake' route."""
+    subs = {
+        "wake": {
+            "description": "test",
+            "events": [],
+            "secret": route_secret,
+            "prompt": "test",
+            "skills": skills or [],
+            "deliver": "log",
+            "created_at": "2026-01-01T00:00:00Z",
+        }
+    }
+    (profile_dir / "webhook_subscriptions.json").write_text(
+        json.dumps(subs), encoding="utf-8"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Happy-path: a clean set of profiles produces the v0.4.4 payload
+# --------------------------------------------------------------------------- #
+
+
+def test_init_emits_v044_webhook_format(tmp_path: Path) -> None:
     hermes = tmp_path / ".hermes"
     profiles = hermes / "profiles"
-    (profiles / "main").mkdir(parents=True)
-    _write_env(
-        profiles / "main" / ".env",
-        TELEGRAM_BOT_TOKEN="111:NEW",
-        TELEGRAM_HOME_CHANNEL="1000",
+
+    shared = "abcdef1234567890" * 4  # 64 hex-ish chars
+    _write_webhook_profile(profiles / "main", port=8651, secret=shared)
+    _write_webhook_profile(profiles / "glm51", port=8653, secret=shared)
+
+    out = tmp_path / "wake.json"
+    result = runner.invoke(
+        app,
+        [
+            "wake-registry",
+            "init",
+            "--hermes-profiles",
+            str(profiles),
+            "--hermes-root",
+            str(hermes),
+            "--output",
+            str(out),
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+
+    payload = json.loads(out.read_text())
+    assert payload["wake_webhook_secret"] == shared
+    assert payload["agents"]["vlbeau-main"] == {
+        "wake_webhook_url": "http://127.0.0.1:8651/webhooks/wake"
+    }
+    assert payload["agents"]["vlbeau-glm51"] == {
+        "wake_webhook_url": "http://127.0.0.1:8653/webhooks/wake"
+    }
+
+
+def test_init_uses_route_level_secret_over_global(tmp_path: Path) -> None:
+    """Subscription ``wake.secret`` wins over ``platforms.webhook.extra.secret``.
+
+    This mirrors how the Hermes webhook adapter resolves secrets at runtime
+    (``route_config.get("secret", global)``). The registry must match so that
+    the HMAC signature we compute with the shared secret verifies against
+    whatever the gateway actually validates.
+    """
+    hermes = tmp_path / ".hermes"
+    profiles = hermes / "profiles"
+
+    route_secret = "route-secret-" + "x" * 48
+    _write_webhook_profile(profiles / "main", port=8651, secret="global-ignored")
+    _write_subscription(profiles / "main", route_secret=route_secret)
+
+    out = tmp_path / "wake.json"
+    result = runner.invoke(
+        app,
+        [
+            "wake-registry",
+            "init",
+            "--hermes-profiles",
+            str(profiles),
+            "--hermes-root",
+            str(hermes),
+            "--output",
+            str(out),
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(out.read_text())
+    assert payload["wake_webhook_secret"] == route_secret
+
+
+def test_init_skips_profiles_without_webhook(tmp_path: Path) -> None:
+    """Profiles with no webhook section are silently skipped."""
+    hermes = tmp_path / ".hermes"
+    profiles = hermes / "profiles"
+
+    shared = "abcd" * 16
+    _write_webhook_profile(profiles / "main", port=8651, secret=shared)
+
+    # nowebhook has a .env and a config.yaml but no platforms section
+    nowh = profiles / "nowebhook"
+    nowh.mkdir(parents=True)
+    (nowh / "config.yaml").write_text("model:\n  default: x\n", encoding="utf-8")
+    (nowh / ".env").write_text("X=y\n", encoding="utf-8")
+
+    out = tmp_path / "wake.json"
+    result = runner.invoke(
+        app,
+        [
+            "wake-registry",
+            "init",
+            "--hermes-profiles",
+            str(profiles),
+            "--hermes-root",
+            str(hermes),
+            "--output",
+            str(out),
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(out.read_text())
+    assert "vlbeau-nowebhook" not in payload["agents"]
+    assert "vlbeau-main" in payload["agents"]
+
+
+def test_init_skips_disabled_webhook(tmp_path: Path) -> None:
+    """platforms.webhook.enabled=false is treated as "no webhook"."""
+    hermes = tmp_path / ".hermes"
+    profiles = hermes / "profiles"
+    _write_webhook_profile(
+        profiles / "main", port=8651, secret="x" * 64, enabled=False
     )
 
     out = tmp_path / "wake.json"
-    # Seed a prior registry with a thread_id on main
+    result = runner.invoke(
+        app,
+        [
+            "wake-registry",
+            "init",
+            "--hermes-profiles",
+            str(profiles),
+            "--hermes-root",
+            str(hermes),
+            "--output",
+            str(out),
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(out.read_text())
+    assert payload["agents"] == {}
+
+
+def test_init_skips_profiles_with_mismatching_secret(tmp_path: Path) -> None:
+    """Secret conflicts are skipped + surfaced in stdout (not silently merged)."""
+    hermes = tmp_path / ".hermes"
+    profiles = hermes / "profiles"
+
+    _write_webhook_profile(profiles / "main", port=8651, secret="secret-A" * 8)
+    # glm51 has a different secret — must be skipped
+    _write_webhook_profile(profiles / "glm51", port=8653, secret="secret-B" * 8)
+
+    out = tmp_path / "wake.json"
+    result = runner.invoke(
+        app,
+        [
+            "wake-registry",
+            "init",
+            "--hermes-profiles",
+            str(profiles),
+            "--hermes-root",
+            str(hermes),
+            "--output",
+            str(out),
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(out.read_text())
+    # First profile scanned wins. Profiles are iterated in sorted order, so
+    # glm51 comes before main alphabetically and its secret is adopted.
+    assert payload["wake_webhook_secret"] == "secret-B" * 8
+    assert "vlbeau-glm51" in payload["agents"]
+    assert "vlbeau-main" not in payload["agents"]
+    # stdout surfaces the mismatch
+    assert "mismatching" in result.stdout.lower() or "mismatch" in result.stdout.lower()
+    assert "vlbeau-main" in result.stdout
+
+
+def test_init_migrates_legacy_v043_registry(tmp_path: Path) -> None:
+    """A pre-existing v0.4.3 Telegram registry must be detected + overwritten."""
+    hermes = tmp_path / ".hermes"
+    profiles = hermes / "profiles"
+    shared = "new-secret-" + "x" * 53
+    _write_webhook_profile(profiles / "main", port=8651, secret=shared)
+
+    out = tmp_path / "wake.json"
+    # Seed a legacy v0.4.3 registry.
     out.write_text(
         json.dumps(
             {
                 "wake_bot_token": "111:OLD",
-                "agents": {
-                    "vlbeau-main": {"chat_id": "1000", "thread_id": 42}
-                },
+                "agents": {"vlbeau-main": {"chat_id": "-100", "thread_id": 5}},
             }
         )
     )
+
     result = runner.invoke(
         app,
         [
@@ -206,35 +265,27 @@ def test_wake_registry_init_preserves_thread_id_across_regenerations(
     )
     assert result.exit_code == 0, result.stdout
     payload = json.loads(out.read_text())
-    # Token refreshed, thread_id preserved
-    assert payload["wake_bot_token"] == "111:NEW"
-    assert payload["agents"]["vlbeau-main"]["thread_id"] == 42
+    # Legacy keys gone.
+    assert "wake_bot_token" not in payload
+    assert payload["wake_webhook_secret"] == shared
+    # Migration banner printed.
+    assert "migrating" in result.stdout.lower()
+    assert "v0.4.3" in result.stdout
 
 
-def test_wake_registry_init_migrates_legacy_prior_registry(tmp_path: Path) -> None:
-    """A prior legacy-format registry must be silently upgraded to shared-bot."""
+def test_init_migrates_legacy_v03_registry(tmp_path: Path) -> None:
+    """A v0.3 per-agent-token registry also triggers the migration banner."""
     hermes = tmp_path / ".hermes"
     profiles = hermes / "profiles"
-    (profiles / "main").mkdir(parents=True)
-    _write_env(
-        profiles / "main" / ".env",
-        TELEGRAM_BOT_TOKEN="111:MAIN",
-        TELEGRAM_HOME_CHANNEL="1000",
-    )
+    _write_webhook_profile(profiles / "main", port=8651, secret="s" * 64)
 
     out = tmp_path / "wake.json"
-    # Legacy-format prior registry (no wake_bot_token at top level)
     out.write_text(
         json.dumps(
-            {
-                "vlbeau-main": {
-                    "bot_token": "LEGACY_IGNORE",
-                    "chat_id": "1000",
-                    "thread_id": 7,
-                }
-            }
+            {"vlbeau-main": {"bot_token": "111:X", "chat_id": "1000"}}
         )
     )
+
     result = runner.invoke(
         app,
         [
@@ -249,26 +300,17 @@ def test_wake_registry_init_migrates_legacy_prior_registry(tmp_path: Path) -> No
         ],
     )
     assert result.exit_code == 0, result.stdout
-    payload = json.loads(out.read_text())
-    # Now in new format
-    assert payload["wake_bot_token"] == "111:MAIN"
-    # thread_id preserved even from legacy shape
-    assert payload["agents"]["vlbeau-main"]["thread_id"] == 7
-    # per-agent bot_token gone
-    assert "bot_token" not in payload["agents"]["vlbeau-main"]
+    assert "migrating" in result.stdout.lower()
+    assert "v0.3" in result.stdout
 
 
-def test_wake_registry_init_skips_profile_missing_channel(tmp_path: Path) -> None:
+def test_init_tolerates_missing_profile_directory(tmp_path: Path) -> None:
+    """Never crash on a partial environment."""
     hermes = tmp_path / ".hermes"
     profiles = hermes / "profiles"
-    (profiles / "main").mkdir(parents=True)
-    _write_env(
-        profiles / "main" / ".env",
-        TELEGRAM_BOT_TOKEN="111:MAIN",
-        TELEGRAM_HOME_CHANNEL="1000",
-    )
-    # glm51 has no .env → skipped
-    (profiles / "glm51").mkdir()
+    # Don't create any profile. profiles_root must exist for the CLI not to
+    # fail, but it may be empty.
+    profiles.mkdir(parents=True)
 
     out = tmp_path / "wake.json"
     result = runner.invoke(
@@ -286,17 +328,46 @@ def test_wake_registry_init_skips_profile_missing_channel(tmp_path: Path) -> Non
     )
     assert result.exit_code == 0, result.stdout
     payload = json.loads(out.read_text())
-    assert "vlbeau-main" in payload["agents"]
-    assert "vlbeau-glm51" not in payload["agents"]
+    assert payload == {"wake_webhook_secret": "", "agents": {}}
 
 
-def test_wake_registry_init_empty_result(tmp_path: Path) -> None:
-    """No profile has a channel → registry is empty but command succeeds."""
+def test_init_fails_on_missing_profiles_root(tmp_path: Path) -> None:
+    """Non-existent profiles root is a hard error (typer exit code 2)."""
+    hermes = tmp_path / ".hermes"
+    out = tmp_path / "wake.json"
+    result = runner.invoke(
+        app,
+        [
+            "wake-registry",
+            "init",
+            "--hermes-profiles",
+            str(hermes / "does-not-exist"),
+            "--hermes-root",
+            str(hermes),
+            "--output",
+            str(out),
+        ],
+    )
+    assert result.exit_code == 2
+
+
+def test_init_skips_webhook_missing_port(tmp_path: Path) -> None:
+    """A malformed webhook section (no port) is skipped, not a crash."""
     hermes = tmp_path / ".hermes"
     profiles = hermes / "profiles"
-    (profiles / "main").mkdir(parents=True)
-    # main only has the wake-bot token — no TELEGRAM_HOME_CHANNEL → entry skipped
-    _write_env(profiles / "main" / ".env", TELEGRAM_BOT_TOKEN="111:MAIN")
+
+    main = profiles / "main"
+    main.mkdir(parents=True)
+    (main / "config.yaml").write_text(
+        "platforms:\n"
+        "  webhook:\n"
+        "    enabled: true\n"
+        "    extra:\n"
+        '      host: "127.0.0.1"\n'
+        '      secret: "x"\n',
+        encoding="utf-8",
+    )
+    (main / ".env").write_text("X=y\n", encoding="utf-8")
 
     out = tmp_path / "wake.json"
     result = runner.invoke(
@@ -314,20 +385,28 @@ def test_wake_registry_init_empty_result(tmp_path: Path) -> None:
     )
     assert result.exit_code == 0, result.stdout
     payload = json.loads(out.read_text())
-    assert payload["wake_bot_token"] == "111:MAIN"
     assert payload["agents"] == {}
 
 
-def test_wake_registry_init_handles_quoted_values(tmp_path: Path) -> None:
-    """Real .env files often quote values — they must be unquoted."""
+def test_init_accepts_string_port_from_yaml(tmp_path: Path) -> None:
+    """YAML that quotes the port (``port: "8651"``) is tolerated."""
     hermes = tmp_path / ".hermes"
     profiles = hermes / "profiles"
-    (profiles / "main").mkdir(parents=True)
-    (profiles / "main" / ".env").write_text(
-        'TELEGRAM_BOT_TOKEN="111:QUOTED"\n'
-        'TELEGRAM_HOME_CHANNEL="1000"\n',
+
+    main = profiles / "main"
+    main.mkdir(parents=True)
+    (main / "config.yaml").write_text(
+        "platforms:\n"
+        "  webhook:\n"
+        "    enabled: true\n"
+        "    extra:\n"
+        '      host: "127.0.0.1"\n'
+        '      port: "8651"\n'
+        '      secret: "aaa"\n',
         encoding="utf-8",
     )
+    (main / ".env").write_text("X=y\n", encoding="utf-8")
+
     out = tmp_path / "wake.json"
     result = runner.invoke(
         app,
@@ -344,23 +423,48 @@ def test_wake_registry_init_handles_quoted_values(tmp_path: Path) -> None:
     )
     assert result.exit_code == 0, result.stdout
     payload = json.loads(out.read_text())
-    assert payload["wake_bot_token"] == "111:QUOTED"
-    assert payload["agents"]["vlbeau-main"]["chat_id"] == "1000"
+    assert payload["agents"]["vlbeau-main"] == {
+        "wake_webhook_url": "http://127.0.0.1:8651/webhooks/wake"
+    }
 
 
-def test_wake_registry_init_ignores_corrupt_prior(tmp_path: Path) -> None:
-    """A malformed prior registry must not prevent regeneration."""
+def test_init_maps_0000_host_to_loopback(tmp_path: Path) -> None:
+    """If config binds 0.0.0.0, the URL reaches it via 127.0.0.1."""
     hermes = tmp_path / ".hermes"
     profiles = hermes / "profiles"
-    (profiles / "main").mkdir(parents=True)
-    _write_env(
-        profiles / "main" / ".env",
-        TELEGRAM_BOT_TOKEN="111:MAIN",
-        TELEGRAM_HOME_CHANNEL="1000",
+    _write_webhook_profile(
+        profiles / "main", port=8651, secret="x" * 64, host="0.0.0.0"
     )
 
     out = tmp_path / "wake.json"
-    out.write_text("this is not json at all")
+    result = runner.invoke(
+        app,
+        [
+            "wake-registry",
+            "init",
+            "--hermes-profiles",
+            str(profiles),
+            "--hermes-root",
+            str(hermes),
+            "--output",
+            str(out),
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(out.read_text())
+    assert payload["agents"]["vlbeau-main"] == {
+        "wake_webhook_url": "http://127.0.0.1:8651/webhooks/wake"
+    }
+
+
+def test_init_ignores_corrupt_prior_registry(tmp_path: Path) -> None:
+    """A corrupt prior registry must not prevent regeneration."""
+    hermes = tmp_path / ".hermes"
+    profiles = hermes / "profiles"
+    _write_webhook_profile(profiles / "main", port=8651, secret="x" * 64)
+
+    out = tmp_path / "wake.json"
+    out.write_text("{ this is not { valid json")
 
     result = runner.invoke(
         app,
@@ -377,98 +481,20 @@ def test_wake_registry_init_ignores_corrupt_prior(tmp_path: Path) -> None:
     )
     assert result.exit_code == 0, result.stdout
     payload = json.loads(out.read_text())
-    assert payload["wake_bot_token"] == "111:MAIN"
+    assert payload["agents"]["vlbeau-main"]["wake_webhook_url"].startswith("http://")
 
 
-# --------------------------------------------------------------------------- #
-# --legacy-format flag for operators who need per-agent-token DMs
-# --------------------------------------------------------------------------- #
+def test_init_writes_registry_with_0600_perms(tmp_path: Path) -> None:
+    """The registry file contains ``wake_webhook_secret`` in clear — its mode
+    must be 0600 after write to keep a multi-user host from snooping it via
+    the default umask (typically 0644)."""
+    import stat
 
-
-def test_legacy_format_emits_old_shape(tmp_path: Path) -> None:
-    """``--legacy-format`` produces the v0.3 - v0.4.2 JSON shape."""
     hermes = tmp_path / ".hermes"
     profiles = hermes / "profiles"
-    (profiles / "main").mkdir(parents=True)
-    _write_env(
-        profiles / "main" / ".env",
-        TELEGRAM_BOT_TOKEN="111:MAIN",
-        TELEGRAM_HOME_CHANNEL="1000",
-    )
-    out = tmp_path / "wake.json"
-    result = runner.invoke(
-        app,
-        [
-            "wake-registry",
-            "init",
-            "--hermes-profiles",
-            str(profiles),
-            "--hermes-root",
-            str(hermes),
-            "--output",
-            str(out),
-            "--legacy-format",
-        ],
-    )
-    assert result.exit_code == 0, result.stdout
-    payload = json.loads(out.read_text())
-    # Legacy shape: no top-level wake_bot_token, entries carry bot_token
-    assert "wake_bot_token" not in payload
-    assert payload["vlbeau-main"] == {"bot_token": "111:MAIN", "chat_id": "1000"}
-
-
-# --------------------------------------------------------------------------- #
-# v0.4.3.1: chat_id preservation across regenerations
-# --------------------------------------------------------------------------- #
-
-
-def test_wake_registry_init_preserves_chat_id_across_regenerations(
-    tmp_path: Path,
-) -> None:
-    """A chat_id overridden to a supergroup id must survive re-init.
-
-    Regression for v0.4.3 where a second ``wake-registry init`` would reset
-    every chat_id back to whatever lived in the profile's ``.env``, silently
-    breaking operators who had pointed the registry at a Telegram supergroup
-    (chat_id = -100...) whose id is not in each profile's .env.
-    """
-    hermes = tmp_path / ".hermes"
-    profiles = hermes / "profiles"
-    (profiles / "main").mkdir(parents=True)
-    (profiles / "glm51").mkdir()
-    # .env carries a DM chat_id, but operator has overridden both agents
-    # to point at a supergroup (-100...) in the registry.
-    _write_env(
-        profiles / "main" / ".env",
-        TELEGRAM_BOT_TOKEN="111:MAIN",
-        TELEGRAM_HOME_CHANNEL="1395012867",  # DM id
-    )
-    _write_env(
-        profiles / "glm51" / ".env",
-        TELEGRAM_BOT_TOKEN="222:GLM",
-        TELEGRAM_HOME_CHANNEL="1395012867",  # DM id
-    )
+    _write_webhook_profile(profiles / "main", port=8651, secret="x" * 64)
 
     out = tmp_path / "wake.json"
-    # Seed: registry points at supergroup with thread_ids
-    out.write_text(
-        json.dumps(
-            {
-                "wake_bot_token": "111:MAIN",
-                "agents": {
-                    "vlbeau-main": {
-                        "chat_id": "-1003997069076",
-                        "thread_id": 5,
-                    },
-                    "vlbeau-glm51": {
-                        "chat_id": "-1003997069076",
-                        "thread_id": 7,
-                    },
-                },
-            }
-        )
-    )
-
     result = runner.invoke(
         app,
         [
@@ -483,163 +509,6 @@ def test_wake_registry_init_preserves_chat_id_across_regenerations(
         ],
     )
     assert result.exit_code == 0, result.stdout
-    payload = json.loads(out.read_text())
 
-    # Both agents: chat_id preserved (supergroup), thread_id preserved, no DM leak.
-    assert payload["agents"]["vlbeau-main"]["chat_id"] == "-1003997069076"
-    assert payload["agents"]["vlbeau-main"]["thread_id"] == 5
-    assert payload["agents"]["vlbeau-glm51"]["chat_id"] == "-1003997069076"
-    assert payload["agents"]["vlbeau-glm51"]["thread_id"] == 7
-
-
-def test_wake_registry_init_reset_chat_ids_reads_from_env(tmp_path: Path) -> None:
-    """``--reset-chat-ids`` forces re-reading chat_id from each profile's .env.
-
-    thread_id overrides must still be preserved — only chat_id is re-read.
-    """
-    hermes = tmp_path / ".hermes"
-    profiles = hermes / "profiles"
-    (profiles / "main").mkdir(parents=True)
-    _write_env(
-        profiles / "main" / ".env",
-        TELEGRAM_BOT_TOKEN="111:MAIN",
-        TELEGRAM_HOME_CHANNEL="1395012867",  # DM id in .env
-    )
-
-    out = tmp_path / "wake.json"
-    out.write_text(
-        json.dumps(
-            {
-                "wake_bot_token": "111:MAIN",
-                "agents": {
-                    "vlbeau-main": {
-                        "chat_id": "-1003997069076",  # supergroup override
-                        "thread_id": 5,
-                    },
-                },
-            }
-        )
-    )
-
-    result = runner.invoke(
-        app,
-        [
-            "wake-registry",
-            "init",
-            "--hermes-profiles",
-            str(profiles),
-            "--hermes-root",
-            str(hermes),
-            "--output",
-            str(out),
-            "--reset-chat-ids",
-        ],
-    )
-    assert result.exit_code == 0, result.stdout
-    payload = json.loads(out.read_text())
-
-    # chat_id reset to .env value, thread_id still preserved
-    assert payload["agents"]["vlbeau-main"]["chat_id"] == "1395012867"
-    assert payload["agents"]["vlbeau-main"]["thread_id"] == 5
-
-
-def test_wake_registry_init_chat_id_uses_env_for_new_agents(tmp_path: Path) -> None:
-    """An agent absent from the prior registry gets chat_id from its .env.
-
-    Preservation only triggers when the agent already existed — brand-new
-    profiles fall through to the regular .env-sourced behaviour.
-    """
-    hermes = tmp_path / ".hermes"
-    profiles = hermes / "profiles"
-    (profiles / "main").mkdir(parents=True)
-    (profiles / "newcomer").mkdir()
-    _write_env(
-        profiles / "main" / ".env",
-        TELEGRAM_BOT_TOKEN="111:MAIN",
-        TELEGRAM_HOME_CHANNEL="1395012867",
-    )
-    _write_env(
-        profiles / "newcomer" / ".env",
-        TELEGRAM_BOT_TOKEN="999:NEW",
-        TELEGRAM_HOME_CHANNEL="9999",
-    )
-
-    out = tmp_path / "wake.json"
-    # Prior registry has main at supergroup, but no entry for newcomer.
-    out.write_text(
-        json.dumps(
-            {
-                "wake_bot_token": "111:MAIN",
-                "agents": {
-                    "vlbeau-main": {"chat_id": "-1003997069076", "thread_id": 5},
-                },
-            }
-        )
-    )
-
-    result = runner.invoke(
-        app,
-        [
-            "wake-registry",
-            "init",
-            "--hermes-profiles",
-            str(profiles),
-            "--hermes-root",
-            str(hermes),
-            "--output",
-            str(out),
-        ],
-    )
-    assert result.exit_code == 0, result.stdout
-    payload = json.loads(out.read_text())
-
-    # Existing agent preserved, newcomer gets .env chat_id.
-    assert payload["agents"]["vlbeau-main"]["chat_id"] == "-1003997069076"
-    assert payload["agents"]["vlbeau-newcomer"]["chat_id"] == "9999"
-
-
-def test_wake_registry_init_reports_preservation_in_stdout(tmp_path: Path) -> None:
-    """The CLI must mention chat_id preservation in its summary output.
-
-    Operators need a signal that the merge actually carried the override
-    forward, otherwise a typo in the prior registry silently propagates.
-    """
-    hermes = tmp_path / ".hermes"
-    profiles = hermes / "profiles"
-    (profiles / "main").mkdir(parents=True)
-    _write_env(
-        profiles / "main" / ".env",
-        TELEGRAM_BOT_TOKEN="111:MAIN",
-        TELEGRAM_HOME_CHANNEL="1000",
-    )
-
-    out = tmp_path / "wake.json"
-    out.write_text(
-        json.dumps(
-            {
-                "wake_bot_token": "111:MAIN",
-                "agents": {
-                    "vlbeau-main": {"chat_id": "-1003997069076", "thread_id": 5},
-                },
-            }
-        )
-    )
-
-    result = runner.invoke(
-        app,
-        [
-            "wake-registry",
-            "init",
-            "--hermes-profiles",
-            str(profiles),
-            "--hermes-root",
-            str(hermes),
-            "--output",
-            str(out),
-        ],
-    )
-    assert result.exit_code == 0, result.stdout
-    # stdout should mention chat_id preservation
-    assert "chat_id" in result.stdout
-    # And thread_id preservation
-    assert "thread_id" in result.stdout
+    mode = stat.S_IMODE(out.stat().st_mode)
+    assert mode == 0o600, f"expected 0o600, got {oct(mode)}"
