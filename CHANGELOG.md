@@ -4,6 +4,59 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - 2026-04-22
+
+Forum-topic support for Telegram wake-ups, resolving Issue #4 (all nine
+VLBeau agents were sharing the same DM chat, so wake-ups crossed wires).
+Each recipient may now declare a `thread_id` in the registry and wake-ups
+are routed to the corresponding forum topic inside the shared supergroup.
+
+### Added
+- **`WakeEntry.thread_id`** — new optional `int | None` field. Absent /
+  `None` preserves v0.4.1 behaviour (DM or `General` topic). When set, the
+  `sendMessage` POST includes Telegram's `message_thread_id` parameter so
+  the wake-up lands in the correct forum topic.
+- **`load_registry()`** now reads an optional `"thread_id": <int>` per
+  entry, rejecting non-integer values (including the Python `True`/`False`
+  footgun) with a clear `ValueError`.
+- **`wake-registry init` intelligent merge** — when a previous registry
+  exists, manually-edited `thread_id` fields are carried forward even
+  though `bot_token` / `chat_id` are refreshed from the Hermes `.env`
+  sources. Operators can tweak topic routing in the JSON without fearing
+  the next regeneration will nuke their change. Corrupt prior registries
+  are silently ignored so `init` remains idempotent.
+- **`wake-registry init` output table** now shows a third `thread_id`
+  column and a dim footer reporting how many entries had a `thread_id`
+  preserved from the prior registry.
+
+### Tests
+- 4 new tests in `tests/test_wake.py` covering `thread_id` loading, the
+  boolean-as-int footgun, `message_thread_id` inclusion in the POST, and
+  explicit verification that the v0.4.1 behaviour is unchanged when no
+  `thread_id` is set.
+- 3 new tests in `tests/test_cli_wake_registry.py` covering the intelligent
+  merge: `thread_id` preservation on re-init, clean first-run baseline
+  without `thread_id`, and recovery from a corrupt prior registry.
+
+### Backwards compatibility
+Zero breaking changes. Registries written by v0.4.1 load unchanged and
+continue to route wake-ups exactly as before. New forum-topic routing is
+opt-in: an entry needs `thread_id` for the new behaviour to kick in.
+
+### Migration notes
+To adopt forum topics:
+1. Create a Telegram supergroup with `is_forum: true` (enable Topics in
+   group settings).
+2. Create one forum topic per agent (via Bot API `createForumTopic` or
+   the Telegram app UI).
+3. Edit `~/.a2a-wake-registry.json`: set each entry's `chat_id` to the
+   supergroup's `-100...` id and add `"thread_id": <N>` where `<N>` is
+   the `message_thread_id` returned by `createForumTopic`.
+4. Restart the Hermes gateways so the MCP bridge child processes reload
+   the registry (they cache it at startup).
+5. Subsequent `a2a-mcp-bridge wake-registry init` runs will preserve the
+   `thread_id` values you added.
+
 ## [0.4.1] - 2026-04-21
 
 Polish follow-up to v0.4.0, addressing the two nits flagged during the PR #3
