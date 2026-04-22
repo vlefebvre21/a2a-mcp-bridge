@@ -2,7 +2,7 @@
 
 > MCP server that lets AI agents message each other — A2A-style peer-to-peer communication, exposed as MCP tools.
 
-**Status:** v0.4.2 — usable in production. Not yet published to PyPI; install from GitHub.
+**Status:** v0.4.3 — usable in production. Not yet published to PyPI; install from GitHub.
 
 ## Why
 
@@ -58,16 +58,27 @@ Each profile that defines `TELEGRAM_BOT_TOKEN` + `TELEGRAM_HOME_CHANNEL` is
 registered as `vlbeau-<profile>`; `~/.hermes/.env` maps to `vlbeau-opus`.
 Profiles with incomplete env are skipped silently.
 
-#### Forum-topic routing (v0.4.2+)
+#### Forum-topic routing (v0.4.2+) with a shared wake bot (v0.4.3+)
 
-If all your agents share a single Telegram supergroup with **Topics enabled**
-(aka *forum mode* — `is_forum: true`), add a `thread_id` field to each entry
-so wake-ups land in the right topic instead of crowding `General`:
+If all your agents share a single Telegram supergroup with **Topics
+enabled** (aka *forum mode* — `is_forum: true`), wake-ups must be
+posted through a **single shared bot** rather than each recipient's
+own bot. Why: Telegram does not deliver a bot its own messages, so a
+bot can't wake itself up. Using a neutral sender (typically
+`vlbeau-main`'s `@VLBeauBot`) makes each wake-up land in the target's
+topic *as an update from another user*, which actually triggers the
+recipient's gateway.
+
+The v0.4.3+ registry format:
 
 ```json
 {
-  "vlbeau-main":  {"bot_token": "123:ABC", "chat_id": "-1001234567890", "thread_id": 5},
-  "vlbeau-glm51": {"bot_token": "456:DEF", "chat_id": "-1001234567890", "thread_id": 7}
+  "wake_bot_token": "123:ABC_WAKE_BOT",
+  "agents": {
+    "vlbeau-main":  {"chat_id": "-1001234567890", "thread_id": 5},
+    "vlbeau-glm51": {"chat_id": "-1001234567890", "thread_id": 7},
+    "vlbeau-opus":  {"chat_id": "-1001234567890", "thread_id": 6}
+  }
 }
 ```
 
@@ -81,10 +92,25 @@ curl -s "https://api.telegram.org/bot${TOKEN}/createForumTopic" \
 # → {"ok":true,"result":{"message_thread_id":7,"name":"glm51",...}}
 ```
 
-`thread_id` is optional and entries without it keep v0.4.1 behaviour (plain
-DM or the group's `General` topic). Re-running `wake-registry init`
-**preserves** any `thread_id` values already in the registry — it only
-refreshes `bot_token` / `chat_id` from the Hermes `.env` files.
+`thread_id` is optional and entries without it keep v0.4.1 behaviour
+(plain DM or the group's `General` topic). Re-running
+`wake-registry init` **preserves** any `thread_id` values already in
+the registry — it only refreshes `chat_id` and the top-level
+`wake_bot_token` from the Hermes `.env` files.
+
+#### Legacy per-agent DM wake-up (v0.3 - v0.4.2)
+
+If you don't have a supergroup and just want each agent to receive
+wake-ups in its own 1-on-1 DM chat, pass `--legacy-format` to
+`wake-registry init`:
+
+```bash
+a2a-mcp-bridge wake-registry init --legacy-format
+```
+
+This emits the older shape with a `bot_token` per entry. Accepted
+indefinitely but deprecated — `load_registry()` logs a migration hint
+when it sees this format.
 
 ## Quick start
 
@@ -160,7 +186,7 @@ a2a-mcp-bridge register --all --hermes-profiles ~/.hermes/profiles
 | `A2A_AGENT_ID` | *required* | Identity this process advertises on the bus. |
 | `A2A_DB_PATH` | `./a2a-bus.sqlite` | SQLite file (shared by all agents on the bus). |
 | `A2A_SIGNAL_DIR` | `/tmp/a2a-signals` | Directory used by `agent_subscribe` for real-time wake-ups. |
-| `A2A_WAKE_REGISTRY` | `~/.a2a-wake-registry.json` | JSON map `agent_id → {bot_token, chat_id, [thread_id]}` for Telegram wake-up. `thread_id` (v0.4.2+) is optional and routes the wake-up to a specific forum topic. Missing/invalid file → feature silently disabled. |
+| `A2A_WAKE_REGISTRY` | `~/.a2a-wake-registry.json` | JSON wake registry. v0.4.3+ shape: `{"wake_bot_token": "...", "agents": {<id>: {"chat_id": ..., "thread_id": ...}}}`. Legacy per-agent `{<id>: {"bot_token": ..., "chat_id": ...}}` still accepted (deprecated). Missing/invalid file → feature silently disabled. |
 
 ## CLI reference
 
@@ -185,6 +211,10 @@ Shipped so far:
 - **v0.4.2** — Forum-topic routing (`thread_id` → `message_thread_id`) +
   `wake-registry init` preserves `thread_id` overrides across regenerations.
   Resolves [Issue #4](https://github.com/vlefebvre21/a2a-mcp-bridge/issues/4).
+- **v0.4.3** — Shared-wake-bot format. A single `wake_bot_token` at the top
+  of the registry posts every wake-up, so forum-topic routing actually wakes
+  the recipient's gateway (a bot does not receive its own messages in a
+  supergroup). Self-wake guard added. Legacy per-agent format still accepted.
 
 Planned:
 
@@ -214,7 +244,7 @@ cd a2a-mcp-bridge
 uv venv && source .venv/bin/activate
 uv pip install -e ".[dev]"
 
-pytest -q              # 96 tests, ≥85% coverage gate
+pytest -q              # 111 tests, ≥85% coverage gate
 ruff check src/ tests/ # lint
 mypy src/              # strict type-check
 ```

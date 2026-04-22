@@ -88,14 +88,19 @@ def _load_waker() -> TelegramWaker | None:
     """
     path = _resolve_wake_registry_path()
     try:
-        registry = load_registry(path)
+        shared_token, registry = load_registry(path)
     except ValueError as exc:
         logger.warning("wake registry %s is malformed, disabling wake-up: %s", path, exc)
         return None
     if not registry:
         return None
-    logger.info("wake registry loaded: %d agent(s) from %s", len(registry), path)
-    return TelegramWaker(registry)
+    logger.info(
+        "wake registry loaded: %d agent(s) from %s (mode=%s)",
+        len(registry),
+        path,
+        "shared-bot" if shared_token else "per-agent",
+    )
+    return TelegramWaker(registry, shared_token=shared_token)
 
 
 class A2AMcp(FastMCP):

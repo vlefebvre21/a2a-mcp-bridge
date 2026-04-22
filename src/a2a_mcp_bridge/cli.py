@@ -232,6 +232,27 @@ def _parse_env_file(path: Path) -> dict[str, str]:
 
 
 def _entry_from_env(env: dict[str, str]) -> dict[str, Any] | None:
+    """Build a wake registry entry shell from one profile's env.
+
+    Returns ``{"chat_id": ...}`` when at least a Telegram channel is known.
+    Returns ``None`` when the profile has no Telegram channel (can't wake).
+
+    ``bot_token`` from the env is intentionally *not* copied here: in the
+    v0.4.3+ shared-wake-bot format only the wake bot's token matters, and
+    legacy callers that still need per-agent tokens handle that elsewhere.
+    """
+    chat_id = env.get("TELEGRAM_HOME_CHANNEL", "").strip()
+    if not chat_id:
+        return None
+    return {"chat_id": chat_id}
+
+
+def _legacy_entry_from_env(env: dict[str, str]) -> dict[str, Any] | None:
+    """Legacy helper: includes per-agent ``bot_token`` in the entry.
+
+    Kept for operators who explicitly opt out of the shared-bot model via
+    ``--legacy-format``.
+    """
     token = env.get("TELEGRAM_BOT_TOKEN", "").strip()
     chat_id = env.get("TELEGRAM_HOME_CHANNEL", "").strip()
     if not token or not chat_id:
@@ -239,27 +260,39 @@ def _entry_from_env(env: dict[str, str]) -> dict[str, Any] | None:
     return {"bot_token": token, "chat_id": chat_id}
 
 
-def _load_existing_registry(path: Path) -> dict[str, dict[str, Any]]:
-    """Read an existing registry file, or return ``{}`` if missing/invalid.
+def _load_existing_registry(path: Path) -> tuple[str | None, dict[str, dict[str, Any]]]:
+    """Read an existing registry file, returning (prior_shared_token, prior_agents).
 
     v0.4.2: used by ``wake-registry init`` to preserve manually-edited fields
     (typically ``thread_id`` for forum-topic routing) across regenerations.
+    v0.4.3: also preserves the ``wake_bot_token`` if the prior registry used
+    the shared-bot format, so operators don't have to re-supply it.
     Silently tolerates missing / malformed files to keep ``init`` idempotent.
     """
     if not path.is_file():
-        return {}
+        return None, {}
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {}
+        return None, {}
     if not isinstance(raw, dict):
-        return {}
-    return {k: v for k, v in raw.items() if isinstance(v, dict)}
+        return None, {}
+
+    shared = raw.get("wake_bot_token")
+    if isinstance(shared, str) and shared:
+        agents = raw.get("agents")
+        if isinstance(agents, dict):
+            return shared, {k: v for k, v in agents.items() if isinstance(v, dict)}
+        return shared, {}
+
+    # Legacy format: each entry is a dict under the top-level keys.
+    return None, {k: v for k, v in raw.items() if isinstance(v, dict)}
 
 
 # Keys that ``wake-registry init`` will preserve from the existing registry
-# when an entry already exists for the same agent_id. Everything else
-# (bot_token, chat_id) is overwritten from the Hermes ``.env`` source.
+# when an entry already exists for the same agent_id. Chat_id and bot_token
+# are overwritten from the current Hermes .env source; everything else in
+# this tuple is carried forward so operators can edit freely.
 _PRESERVE_KEYS = ("thread_id",)
 
 
@@ -282,6 +315,11 @@ def _merge_with_existing(
     return merged
 
 
+# Name of the Hermes profile whose TELEGRAM_BOT_TOKEN is used as the shared
+# wake bot by default. Can be overridden via ``--wake-bot-profile``.
+DEFAULT_WAKE_BOT_PROFILE = "main"
+
+
 @wake_registry_app.command("init")
 def wake_registry_init(
     hermes_profiles: str = typer.Option(
@@ -300,6 +338,25 @@ def wake_registry_init(
         "-o",
         help="Where to write the generated wake-registry JSON file.",
     ),
+    wake_bot_profile: str = typer.Option(
+        DEFAULT_WAKE_BOT_PROFILE,
+        "--wake-bot-profile",
+        help=(
+            "Name of the Hermes profile whose TELEGRAM_BOT_TOKEN is used as "
+            "the shared wake bot. The shared bot posts every wake-up on "
+            "behalf of the sender so that Telegram supergroups with forum "
+            "topics work correctly. Ignored with --legacy-format."
+        ),
+    ),
+    legacy_format: bool = typer.Option(
+        False,
+        "--legacy-format",
+        help=(
+            "Emit the v0.3 - v0.4.2 registry format with one bot_token per "
+            "agent instead of the shared-wake-bot format. Only needed for "
+            "per-agent DM wake-up setups. Not recommended."
+        ),
+    ),
 ) -> None:
     """Build the Telegram wake-up registry from existing Hermes profiles.
 
@@ -307,8 +364,14 @@ def wake_registry_init(
     profile to agent_id ``vlbeau-<name>``. If ``<hermes-root>/.env`` exists, it
     is mapped to :data:`ROOT_PROFILE_AGENT_ID` (``vlbeau-opus``).
 
-    Profiles without both ``TELEGRAM_BOT_TOKEN`` and ``TELEGRAM_HOME_CHANNEL``
-    set are skipped silently — the command never fails on a partial environment.
+    Profiles without ``TELEGRAM_HOME_CHANNEL`` set are skipped silently —
+    the command never fails on a partial environment.
+
+    By default, emits the v0.4.3+ shared-wake-bot format: a single
+    ``wake_bot_token`` drawn from ``--wake-bot-profile`` (default ``main``)
+    is used for every wake-up, which is required for Telegram supergroups
+    with forum topics (a bot does not receive its own messages). Pass
+    ``--legacy-format`` to emit the old per-agent-token format instead.
     """
     profiles_root = Path(_expand(hermes_profiles))
     if not profiles_root.is_dir():
@@ -316,18 +379,19 @@ def wake_registry_init(
         raise typer.Exit(code=2)
 
     out_path = Path(_expand(output))
-    # Preserve manually-edited fields (e.g. thread_id) from any prior registry.
-    prior = _load_existing_registry(out_path)
+    prior_shared_token, prior_agents = _load_existing_registry(out_path)
 
-    registry: dict[str, dict[str, Any]] = {}
+    build_entry = _legacy_entry_from_env if legacy_format else _entry_from_env
+
+    registry_agents: dict[str, dict[str, Any]] = {}
 
     # Root .env → vlbeau-opus (if present)
     root_env_path = Path(_expand(hermes_root)) / ".env"
     if root_env_path.is_file():
-        entry = _entry_from_env(_parse_env_file(root_env_path))
+        entry = build_entry(_parse_env_file(root_env_path))
         if entry:
-            registry[ROOT_PROFILE_AGENT_ID] = _merge_with_existing(
-                entry, prior.get(ROOT_PROFILE_AGENT_ID)
+            registry_agents[ROOT_PROFILE_AGENT_ID] = _merge_with_existing(
+                entry, prior_agents.get(ROOT_PROFILE_AGENT_ID)
             )
 
     # One entry per profile subdirectory
@@ -337,19 +401,52 @@ def wake_registry_init(
         env_path = profile_dir / ".env"
         if not env_path.is_file():
             continue
-        entry = _entry_from_env(_parse_env_file(env_path))
+        entry = build_entry(_parse_env_file(env_path))
         if not entry:
             continue
         agent_id = f"{AGENT_ID_PREFIX}{profile_dir.name}"
         if not AGENT_ID_PATTERN.match(agent_id):
             console.print(f"[yellow]skip[/yellow] {agent_id} (invalid id)")
             continue
-        registry[agent_id] = _merge_with_existing(entry, prior.get(agent_id))
+        registry_agents[agent_id] = _merge_with_existing(
+            entry, prior_agents.get(agent_id)
+        )
+
+    # Resolve the shared wake-bot token (new format only).
+    shared_token: str | None = None
+    if not legacy_format:
+        wake_bot_env = profiles_root / wake_bot_profile / ".env"
+        if wake_bot_env.is_file():
+            parsed = _parse_env_file(wake_bot_env)
+            candidate = parsed.get("TELEGRAM_BOT_TOKEN", "").strip()
+            if candidate:
+                shared_token = candidate
+        # Fallback: reuse the one we had in the prior registry (if any).
+        if not shared_token and prior_shared_token:
+            shared_token = prior_shared_token
+            console.print(
+                f"[yellow]reused wake_bot_token from prior registry[/yellow] "
+                f"(profile '{wake_bot_profile}' has no TELEGRAM_BOT_TOKEN)"
+            )
+
+    # Compose the final payload.
+    if legacy_format:
+        payload: dict[str, Any] = dict(registry_agents)
+    else:
+        if not shared_token:
+            console.print(
+                f"[red]error:[/red] could not resolve a wake-bot token from "
+                f"profile '{wake_bot_profile}' (and no prior registry with one). "
+                f"Either populate {wake_bot_profile}/.env with TELEGRAM_BOT_TOKEN "
+                f"or re-run with --legacy-format."
+            )
+            raise typer.Exit(code=3)
+        payload = {"wake_bot_token": shared_token, "agents": registry_agents}
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(registry, indent=2) + "\n", encoding="utf-8")
+    out_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
-    if not registry:
+    if not registry_agents:
         console.print(
             f"[yellow]No wake entries found — wrote empty registry to {out_path}[/yellow]"
         )
@@ -357,13 +454,16 @@ def wake_registry_init(
 
     # Report how many thread_id overrides were preserved so operators notice
     # when a merge actually did something useful.
-    preserved = sum(1 for e in registry.values() if "thread_id" in e)
+    preserved = sum(1 for e in registry_agents.values() if "thread_id" in e)
 
-    table = Table(title=f"Wake registry ({len(registry)} agent(s)) → {out_path}")
+    title_mode = "legacy per-agent" if legacy_format else f"shared-bot ({wake_bot_profile})"
+    table = Table(
+        title=f"Wake registry ({len(registry_agents)} agent(s), {title_mode}) → {out_path}"
+    )
     table.add_column("agent_id")
     table.add_column("chat_id")
     table.add_column("thread_id")
-    for aid, entry in registry.items():
+    for aid, entry in registry_agents.items():
         tid = entry.get("thread_id")
         table.add_row(aid, str(entry["chat_id"]), "—" if tid is None else str(tid))
     console.print(table)
