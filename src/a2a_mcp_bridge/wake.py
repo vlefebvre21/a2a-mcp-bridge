@@ -19,6 +19,18 @@ Registry format (JSON file, default ``~/.a2a-wake-registry.json``)::
         "vlbeau-main":  {"bot_token": "123:ABC", "chat_id": "1395012867"},
         "vlbeau-glm51": {"bot_token": "123:ABC", "chat_id": "1395012867"}
     }
+
+Optional ``thread_id`` (v0.4.2) routes the wake-up to a specific forum topic
+in a Telegram supergroup — useful when all agents share one supergroup but
+each deserves its own topic to avoid wake-up crosstalk::
+
+    {
+        "vlbeau-main":  {"bot_token": "123:ABC", "chat_id": "-1001234567890", "thread_id": 5},
+        "vlbeau-glm51": {"bot_token": "123:ABC", "chat_id": "-1001234567890", "thread_id": 7}
+    }
+
+Entries without ``thread_id`` keep the v0.4.1 behaviour (plain DM or group
+``General`` topic).
 """
 
 from __future__ import annotations
@@ -40,10 +52,17 @@ DEFAULT_TIMEOUT_SECONDS = 5.0
 
 @dataclass(frozen=True)
 class WakeEntry:
-    """One recipient's Telegram delivery details."""
+    """One recipient's Telegram delivery details.
+
+    ``thread_id`` is optional (v0.4.2+): when set, the wake-up is routed to
+    the given forum topic in a Telegram supergroup via the
+    ``message_thread_id`` parameter of the sendMessage API. Absent / ``None``
+    falls back to the default chat target (DM or ``General`` topic).
+    """
 
     bot_token: str
     chat_id: str
+    thread_id: int | None = None
 
 
 def load_registry(path: str) -> dict[str, WakeEntry]:
@@ -76,7 +95,12 @@ def load_registry(path: str) -> dict[str, WakeEntry]:
             )
         if not isinstance(chat_id, str) or not chat_id:
             raise ValueError(f"wake registry entry for {agent_id!r} is missing a string 'chat_id'")
-        registry[agent_id] = WakeEntry(bot_token=token, chat_id=chat_id)
+        thread_id = entry.get("thread_id")
+        if thread_id is not None and (not isinstance(thread_id, int) or isinstance(thread_id, bool)):
+            raise ValueError(
+                f"wake registry entry for {agent_id!r} has a non-integer 'thread_id'"
+            )
+        registry[agent_id] = WakeEntry(bot_token=token, chat_id=chat_id, thread_id=thread_id)
     return registry
 
 
@@ -124,13 +148,17 @@ class TelegramWaker:
             return False
 
         url = f"{TELEGRAM_API_BASE}/bot{entry.bot_token}/sendMessage"
-        payload = urlencode(
-            {
-                "chat_id": entry.chat_id,
-                "text": _format_message(sender_id),
-                "disable_notification": "false",
-            }
-        ).encode("utf-8")
+        params: dict[str, str] = {
+            "chat_id": entry.chat_id,
+            "text": _format_message(sender_id),
+            "disable_notification": "false",
+        }
+        if entry.thread_id is not None:
+            # Forum topic routing (Telegram Bot API field name is
+            # ``message_thread_id``; we keep ``thread_id`` in the registry for
+            # ergonomics).
+            params["message_thread_id"] = str(entry.thread_id)
+        payload = urlencode(params).encode("utf-8")
         req = Request(
             url,
             data=payload,
