@@ -290,26 +290,33 @@ def _load_existing_registry(path: Path) -> tuple[str | None, dict[str, dict[str,
 
 
 # Keys that ``wake-registry init`` will preserve from the existing registry
-# when an entry already exists for the same agent_id. Chat_id and bot_token
-# are overwritten from the current Hermes .env source; everything else in
-# this tuple is carried forward so operators can edit freely.
-_PRESERVE_KEYS = ("thread_id",)
+# when an entry already exists for the same agent_id. ``thread_id`` must be
+# preserved because Hermes .env files do not carry it. ``chat_id`` is also
+# preserved by default because operators frequently point registries at a
+# shared Telegram supergroup (chat_id = -100...) whose id lives in the
+# registry, not in every profile's .env. Operators can force relooking-up
+# chat_id from .env by passing ``--reset-chat-ids``.
+_PRESERVE_KEYS_DEFAULT = ("chat_id", "thread_id")
+_PRESERVE_KEYS_RESET_CHAT = ("thread_id",)
 
 
 def _merge_with_existing(
     new_entry: dict[str, Any],
     existing_entry: dict[str, Any] | None,
+    *,
+    reset_chat_ids: bool = False,
 ) -> dict[str, Any]:
     """Merge a freshly-built env entry with its prior value, keeping overrides.
 
-    Any key listed in :data:`_PRESERVE_KEYS` found in the existing entry is
-    carried over, so operators can edit ``thread_id`` by hand without fearing
-    that the next ``wake-registry init`` will nuke their change.
+    By default, both ``chat_id`` and ``thread_id`` found in the existing entry
+    are carried over. Pass ``reset_chat_ids=True`` to force re-reading
+    ``chat_id`` from the profile's ``.env`` (``thread_id`` is still preserved).
     """
     if not existing_entry:
         return new_entry
     merged = dict(new_entry)
-    for key in _PRESERVE_KEYS:
+    preserve = _PRESERVE_KEYS_RESET_CHAT if reset_chat_ids else _PRESERVE_KEYS_DEFAULT
+    for key in preserve:
         if key in existing_entry:
             merged[key] = existing_entry[key]
     return merged
@@ -357,6 +364,18 @@ def wake_registry_init(
             "per-agent DM wake-up setups. Not recommended."
         ),
     ),
+    reset_chat_ids: bool = typer.Option(
+        False,
+        "--reset-chat-ids",
+        help=(
+            "Force re-reading chat_id for every agent from its profile's "
+            ".env, even when a chat_id already exists in the current "
+            "registry. By default, chat_id is preserved across regenerations "
+            "(like thread_id) so that operators pointing at a supergroup "
+            "whose id does not live in each .env do not get their registry "
+            "silently reset to DM channels."
+        ),
+    ),
 ) -> None:
     """Build the Telegram wake-up registry from existing Hermes profiles.
 
@@ -391,7 +410,9 @@ def wake_registry_init(
         entry = build_entry(_parse_env_file(root_env_path))
         if entry:
             registry_agents[ROOT_PROFILE_AGENT_ID] = _merge_with_existing(
-                entry, prior_agents.get(ROOT_PROFILE_AGENT_ID)
+                entry,
+                prior_agents.get(ROOT_PROFILE_AGENT_ID),
+                reset_chat_ids=reset_chat_ids,
             )
 
     # One entry per profile subdirectory
@@ -409,7 +430,9 @@ def wake_registry_init(
             console.print(f"[yellow]skip[/yellow] {agent_id} (invalid id)")
             continue
         registry_agents[agent_id] = _merge_with_existing(
-            entry, prior_agents.get(agent_id)
+            entry,
+            prior_agents.get(agent_id),
+            reset_chat_ids=reset_chat_ids,
         )
 
     # Resolve the shared wake-bot token (new format only).
@@ -452,9 +475,25 @@ def wake_registry_init(
         )
         return
 
-    # Report how many thread_id overrides were preserved so operators notice
-    # when a merge actually did something useful.
-    preserved = sum(1 for e in registry_agents.values() if "thread_id" in e)
+    # Report how many overrides were preserved so operators notice when
+    # a merge actually did something useful. For each agent, count the entry
+    # once per preserved key that came from the prior registry.
+    preserved_thread = sum(
+        1
+        for aid, e in registry_agents.items()
+        if "thread_id" in e
+        and prior_agents.get(aid, {}).get("thread_id") == e.get("thread_id")
+    )
+    preserved_chat = (
+        0
+        if reset_chat_ids
+        else sum(
+            1
+            for aid, e in registry_agents.items()
+            if prior_agents.get(aid, {}).get("chat_id") == e.get("chat_id")
+            and aid in prior_agents
+        )
+    )
 
     title_mode = "legacy per-agent" if legacy_format else f"shared-bot ({wake_bot_profile})"
     table = Table(
@@ -467,11 +506,21 @@ def wake_registry_init(
         tid = entry.get("thread_id")
         table.add_row(aid, str(entry["chat_id"]), "—" if tid is None else str(tid))
     console.print(table)
-    if preserved:
-        console.print(
-            f"[dim]preserved thread_id on {preserved} entr"
-            f"{'y' if preserved == 1 else 'ies'} from prior registry[/dim]"
+    notes = []
+    if preserved_chat:
+        notes.append(
+            f"preserved chat_id on {preserved_chat} entr"
+            f"{'y' if preserved_chat == 1 else 'ies'}"
         )
+    if preserved_thread:
+        notes.append(
+            f"preserved thread_id on {preserved_thread} entr"
+            f"{'y' if preserved_thread == 1 else 'ies'}"
+        )
+    if reset_chat_ids:
+        notes.append("chat_id reset requested (re-read from .env)")
+    if notes:
+        console.print(f"[dim]{' • '.join(notes)}[/dim]")
 
 
 if __name__ == "__main__":
