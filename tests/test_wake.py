@@ -59,6 +59,56 @@ class TestLoadRegistry:
         with pytest.raises(ValueError):
             load_registry(str(path))
 
+    # ----- v0.4.2: optional thread_id for forum-topic routing --------------- #
+
+    def test_loads_entry_with_thread_id(self, tmp_path: Path) -> None:
+        """Registry entries MAY carry a ``thread_id`` int for forum topics."""
+        path = tmp_path / "reg.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "vlbeau-main": {
+                        "bot_token": "T:TOKEN",
+                        "chat_id": "-1001234567890",
+                        "thread_id": 5,
+                    },
+                }
+            )
+        )
+        reg = load_registry(str(path))
+        assert reg["vlbeau-main"].thread_id == 5
+
+    def test_thread_id_is_optional_backwards_compatible(self, tmp_path: Path) -> None:
+        """v0.4.1 registries (no ``thread_id``) must continue to work."""
+        path = tmp_path / "reg.json"
+        path.write_text(
+            json.dumps({"vlbeau-main": {"bot_token": "T:TOKEN", "chat_id": "123"}})
+        )
+        reg = load_registry(str(path))
+        assert reg["vlbeau-main"].thread_id is None
+
+    def test_non_integer_thread_id_raises(self, tmp_path: Path) -> None:
+        """``thread_id`` MUST be an int (or absent); anything else is a typo."""
+        path = tmp_path / "bad.json"
+        path.write_text(
+            json.dumps(
+                {"vlbeau-main": {"bot_token": "T", "chat_id": "123", "thread_id": "5"}}
+            )
+        )
+        with pytest.raises(ValueError, match="thread_id"):
+            load_registry(str(path))
+
+    def test_boolean_thread_id_rejected(self, tmp_path: Path) -> None:
+        """``True`` is an ``int`` in Python — guard against that footgun."""
+        path = tmp_path / "bad.json"
+        path.write_text(
+            json.dumps(
+                {"vlbeau-main": {"bot_token": "T", "chat_id": "123", "thread_id": True}}
+            )
+        )
+        with pytest.raises(ValueError, match="thread_id"):
+            load_registry(str(path))
+
 
 # --------------------------------------------------------------------------- #
 # TelegramWaker.wake
@@ -176,3 +226,47 @@ class TestTelegramWakerWake:
         assert 'target="vlbeau-glm51"' in text
         # Must label the sender as the reply target so LLMs don't guess
         assert "reply-to" in text.lower()
+
+    # ----- v0.4.2: forum topic routing via message_thread_id ---------------- #
+
+    def test_wake_posts_message_thread_id_when_set(self) -> None:
+        """When the WakeEntry has a ``thread_id``, the POST must include
+        ``message_thread_id`` so Telegram routes to the correct forum topic.
+        """
+        registry = {
+            "vlbeau-main": WakeEntry(
+                bot_token="T:TOKEN",
+                chat_id="-1001234567890",
+                thread_id=5,
+            ),
+        }
+        waker = TelegramWaker(registry)
+        fake_response = MagicMock()
+        fake_response.__enter__.return_value = fake_response
+        fake_response.read.return_value = b"{}"
+        fake_response.status = 200
+
+        with patch("a2a_mcp_bridge.wake.urlopen", return_value=fake_response) as up:
+            waker.wake("vlbeau-main", sender_id="vlbeau-glm51")
+
+        body = up.call_args.args[0].data.decode("utf-8")
+        # Telegram field name in the API is message_thread_id
+        assert "message_thread_id=5" in body
+        # chat_id still present (not replaced by thread_id)
+        assert "chat_id=" in body
+
+    def test_wake_omits_message_thread_id_when_unset(
+        self, waker_registry: dict[str, WakeEntry]
+    ) -> None:
+        """v0.4.1 behaviour preserved: no thread_id → no message_thread_id."""
+        waker = TelegramWaker(waker_registry)
+        fake_response = MagicMock()
+        fake_response.__enter__.return_value = fake_response
+        fake_response.read.return_value = b"{}"
+        fake_response.status = 200
+
+        with patch("a2a_mcp_bridge.wake.urlopen", return_value=fake_response) as up:
+            waker.wake("vlbeau-main", sender_id="vlbeau-glm51")
+
+        body = up.call_args.args[0].data.decode("utf-8")
+        assert "message_thread_id" not in body
