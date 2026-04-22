@@ -1,7 +1,9 @@
-"""Tests for the Telegram wake-up layer."""
+"""Tests for the v0.4.4 webhook-based wake-up layer."""
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -9,450 +11,430 @@ from urllib.error import HTTPError, URLError
 
 import pytest
 
-from a2a_mcp_bridge.wake import TelegramWaker, WakeEntry, load_registry
+from a2a_mcp_bridge.wake import (
+    WakeEntry,
+    WebhookWaker,
+    _sign_body,
+    load_registry,
+)
 
 # --------------------------------------------------------------------------- #
-# load_registry — legacy format (per-agent bot_token)
-# --------------------------------------------------------------------------- #
-
-
-class TestLoadRegistryLegacy:
-    """The v0.3 - v0.4.2 format: one bot_token per entry, no top-level keys."""
-
-    def test_loads_valid_json(self, tmp_path: Path) -> None:
-        path = tmp_path / "reg.json"
-        path.write_text(
-            json.dumps(
-                {
-                    "vlbeau-main": {"bot_token": "abc:def", "chat_id": "123"},
-                    "vlbeau-glm51": {"bot_token": "xyz:uvw", "chat_id": "456"},
-                }
-            )
-        )
-        shared, reg = load_registry(str(path))
-        # Legacy format: no shared token is returned.
-        assert shared is None
-        assert reg["vlbeau-main"].bot_token == "abc:def"
-        assert reg["vlbeau-main"].chat_id == "123"
-        assert reg["vlbeau-glm51"].chat_id == "456"
-
-    def test_missing_file_returns_empty(self, tmp_path: Path) -> None:
-        shared, reg = load_registry(str(tmp_path / "nope.json"))
-        assert shared is None
-        assert reg == {}
-
-    def test_malformed_json_raises(self, tmp_path: Path) -> None:
-        path = tmp_path / "bad.json"
-        path.write_text("not json at all")
-        with pytest.raises(ValueError):
-            load_registry(str(path))
-
-    def test_entry_missing_fields_raises(self, tmp_path: Path) -> None:
-        path = tmp_path / "bad.json"
-        path.write_text(json.dumps({"vlbeau-main": {"bot_token": "abc"}}))
-        with pytest.raises(ValueError, match="chat_id"):
-            load_registry(str(path))
-
-    def test_entry_non_string_fields_raises(self, tmp_path: Path) -> None:
-        path = tmp_path / "bad.json"
-        path.write_text(json.dumps({"vlbeau-main": {"bot_token": "abc", "chat_id": 123}}))
-        with pytest.raises(ValueError):
-            load_registry(str(path))
-
-    def test_top_level_non_dict_raises(self, tmp_path: Path) -> None:
-        path = tmp_path / "bad.json"
-        path.write_text(json.dumps(["not", "a", "dict"]))
-        with pytest.raises(ValueError):
-            load_registry(str(path))
-
-    # ----- v0.4.2: optional thread_id in legacy entries --------------------- #
-
-    def test_loads_entry_with_thread_id(self, tmp_path: Path) -> None:
-        path = tmp_path / "reg.json"
-        path.write_text(
-            json.dumps(
-                {
-                    "vlbeau-main": {
-                        "bot_token": "T:TOKEN",
-                        "chat_id": "-1001234567890",
-                        "thread_id": 5,
-                    },
-                }
-            )
-        )
-        _, reg = load_registry(str(path))
-        assert reg["vlbeau-main"].thread_id == 5
-
-    def test_thread_id_is_optional_backwards_compatible(self, tmp_path: Path) -> None:
-        """v0.4.1 registries (no ``thread_id``) must continue to work."""
-        path = tmp_path / "reg.json"
-        path.write_text(
-            json.dumps({"vlbeau-main": {"bot_token": "T:TOKEN", "chat_id": "123"}})
-        )
-        _, reg = load_registry(str(path))
-        assert reg["vlbeau-main"].thread_id is None
-
-    def test_non_integer_thread_id_raises(self, tmp_path: Path) -> None:
-        path = tmp_path / "bad.json"
-        path.write_text(
-            json.dumps(
-                {"vlbeau-main": {"bot_token": "T", "chat_id": "123", "thread_id": "5"}}
-            )
-        )
-        with pytest.raises(ValueError, match="thread_id"):
-            load_registry(str(path))
-
-    def test_boolean_thread_id_rejected(self, tmp_path: Path) -> None:
-        """``True`` is an ``int`` in Python — guard against that footgun."""
-        path = tmp_path / "bad.json"
-        path.write_text(
-            json.dumps(
-                {"vlbeau-main": {"bot_token": "T", "chat_id": "123", "thread_id": True}}
-            )
-        )
-        with pytest.raises(ValueError, match="thread_id"):
-            load_registry(str(path))
-
-    def test_legacy_format_warns_about_migration(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """Legacy format is accepted but logs a deprecation warning."""
-        path = tmp_path / "reg.json"
-        path.write_text(
-            json.dumps({"vlbeau-main": {"bot_token": "T:TOK", "chat_id": "123"}})
-        )
-        with caplog.at_level("WARNING", logger="a2a_mcp_bridge.wake"):
-            load_registry(str(path))
-        assert any(
-            "legacy per-agent bot_token format" in r.message for r in caplog.records
-        )
-
-
-# --------------------------------------------------------------------------- #
-# load_registry — shared-wake-bot format (v0.4.3+)
+# load_registry: v0.4.4 webhook format
 # --------------------------------------------------------------------------- #
 
 
-class TestLoadRegistrySharedBot:
-    """The v0.4.3+ format: a top-level ``wake_bot_token`` + ``agents`` dict."""
+class TestLoadRegistryWebhook:
+    """v0.4.4+ format: wake_webhook_secret + agents with wake_webhook_url."""
 
-    def test_loads_shared_bot_format(self, tmp_path: Path) -> None:
-        path = tmp_path / "reg.json"
-        path.write_text(
+    def test_loads_valid_v044_format(self, tmp_path: Path) -> None:
+        p = tmp_path / "wake.json"
+        p.write_text(
             json.dumps(
                 {
-                    "wake_bot_token": "SHARED:TOKEN",
-                    "agents": {
-                        "vlbeau-main": {"chat_id": "-100111", "thread_id": 5},
-                        "vlbeau-glm51": {"chat_id": "-100111", "thread_id": 7},
-                    },
-                }
-            )
-        )
-        shared, reg = load_registry(str(path))
-        assert shared == "SHARED:TOKEN"
-        # Each entry stores chat_id + thread_id; per-agent bot_token is empty.
-        assert reg["vlbeau-main"].chat_id == "-100111"
-        assert reg["vlbeau-main"].thread_id == 5
-        assert reg["vlbeau-main"].bot_token == ""
-        assert reg["vlbeau-glm51"].thread_id == 7
-
-    def test_shared_bot_requires_non_empty_token(self, tmp_path: Path) -> None:
-        path = tmp_path / "bad.json"
-        path.write_text(
-            json.dumps({"wake_bot_token": "", "agents": {}})
-        )
-        with pytest.raises(ValueError, match="wake_bot_token"):
-            load_registry(str(path))
-
-    def test_shared_bot_requires_agents_dict(self, tmp_path: Path) -> None:
-        """If ``wake_bot_token`` is set, ``agents`` must be an object."""
-        path = tmp_path / "bad.json"
-        path.write_text(
-            json.dumps({"wake_bot_token": "T:TOK", "agents": "not a dict"})
-        )
-        with pytest.raises(ValueError, match="agents"):
-            load_registry(str(path))
-
-    def test_shared_bot_entry_requires_chat_id(self, tmp_path: Path) -> None:
-        path = tmp_path / "bad.json"
-        path.write_text(
-            json.dumps(
-                {"wake_bot_token": "T:TOK", "agents": {"vlbeau-main": {"thread_id": 5}}}
-            )
-        )
-        with pytest.raises(ValueError, match="chat_id"):
-            load_registry(str(path))
-
-    def test_shared_bot_entry_accepts_message_thread_id_alias(
-        self, tmp_path: Path
-    ) -> None:
-        """Operators typing the Telegram-native field name should still work."""
-        path = tmp_path / "reg.json"
-        path.write_text(
-            json.dumps(
-                {
-                    "wake_bot_token": "T:TOK",
+                    "wake_webhook_secret": "abcd1234" * 8,  # 64 chars
                     "agents": {
                         "vlbeau-main": {
-                            "chat_id": "-100111",
-                            "message_thread_id": 42,
+                            "wake_webhook_url": "http://127.0.0.1:8651/webhooks/wake"
+                        },
+                        "vlbeau-glm51": {
+                            "wake_webhook_url": "http://127.0.0.1:8653/webhooks/wake"
+                        },
+                    },
+                }
+            )
+        )
+        secret, entries = load_registry(str(p))
+        assert secret == "abcd1234" * 8
+        assert len(entries) == 2
+        assert entries["vlbeau-main"].wake_webhook_url == (
+            "http://127.0.0.1:8651/webhooks/wake"
+        )
+        assert entries["vlbeau-glm51"].wake_webhook_url == (
+            "http://127.0.0.1:8653/webhooks/wake"
+        )
+
+    def test_missing_file_returns_empty(self, tmp_path: Path) -> None:
+        """A missing registry is valid: wake-up is opt-in."""
+        secret, entries = load_registry(str(tmp_path / "nope.json"))
+        assert secret is None
+        assert entries == {}
+
+    def test_malformed_json_raises(self, tmp_path: Path) -> None:
+        p = tmp_path / "wake.json"
+        p.write_text("{ not valid json")
+        with pytest.raises(ValueError, match="invalid JSON"):
+            load_registry(str(p))
+
+    def test_top_level_non_dict_raises(self, tmp_path: Path) -> None:
+        p = tmp_path / "wake.json"
+        p.write_text(json.dumps(["array", "at", "top"]))
+        with pytest.raises(ValueError, match="JSON object"):
+            load_registry(str(p))
+
+    def test_empty_object_returns_empty(self, tmp_path: Path) -> None:
+        """An empty {} is a valid "no wake configured" state, not an error."""
+        p = tmp_path / "wake.json"
+        p.write_text("{}")
+        secret, entries = load_registry(str(p))
+        assert secret is None
+        assert entries == {}
+
+    def test_non_string_secret_raises(self, tmp_path: Path) -> None:
+        p = tmp_path / "wake.json"
+        p.write_text(
+            json.dumps({"wake_webhook_secret": 12345, "agents": {}})
+        )
+        with pytest.raises(ValueError, match="non-empty string"):
+            load_registry(str(p))
+
+    def test_empty_secret_raises(self, tmp_path: Path) -> None:
+        p = tmp_path / "wake.json"
+        p.write_text(json.dumps({"wake_webhook_secret": "", "agents": {}}))
+        with pytest.raises(ValueError, match="non-empty string"):
+            load_registry(str(p))
+
+    def test_missing_agents_when_secret_set_raises(self, tmp_path: Path) -> None:
+        p = tmp_path / "wake.json"
+        p.write_text(json.dumps({"wake_webhook_secret": "secret"}))
+        with pytest.raises(ValueError, match="'agents' must be an object"):
+            load_registry(str(p))
+
+    def test_entry_missing_url_raises(self, tmp_path: Path) -> None:
+        p = tmp_path / "wake.json"
+        p.write_text(
+            json.dumps(
+                {
+                    "wake_webhook_secret": "secret",
+                    "agents": {"vlbeau-x": {"port": 8650}},  # no URL
+                }
+            )
+        )
+        with pytest.raises(ValueError, match="'wake_webhook_url'"):
+            load_registry(str(p))
+
+    def test_entry_bad_scheme_raises(self, tmp_path: Path) -> None:
+        p = tmp_path / "wake.json"
+        p.write_text(
+            json.dumps(
+                {
+                    "wake_webhook_secret": "secret",
+                    "agents": {
+                        "vlbeau-x": {"wake_webhook_url": "ws://127.0.0.1/wake"}
+                    },
+                }
+            )
+        )
+        with pytest.raises(ValueError, match="http://"):
+            load_registry(str(p))
+
+    def test_entry_oversized_url_raises(self, tmp_path: Path) -> None:
+        huge = "http://" + ("x" * 3000)
+        p = tmp_path / "wake.json"
+        p.write_text(
+            json.dumps(
+                {
+                    "wake_webhook_secret": "secret",
+                    "agents": {"vlbeau-x": {"wake_webhook_url": huge}},
+                }
+            )
+        )
+        with pytest.raises(ValueError, match="longer than"):
+            load_registry(str(p))
+
+    def test_https_url_accepted(self, tmp_path: Path) -> None:
+        """Non-loopback https webhooks are syntactically valid."""
+        p = tmp_path / "wake.json"
+        p.write_text(
+            json.dumps(
+                {
+                    "wake_webhook_secret": "secret",
+                    "agents": {
+                        "vlbeau-x": {
+                            "wake_webhook_url": "https://wake.example.com/webhooks/wake"
                         }
                     },
                 }
             )
         )
-        _, reg = load_registry(str(path))
-        assert reg["vlbeau-main"].thread_id == 42
+        secret, entries = load_registry(str(p))
+        assert secret == "secret"
+        assert entries["vlbeau-x"].wake_webhook_url == (
+            "https://wake.example.com/webhooks/wake"
+        )
 
-    def test_shared_bot_does_not_warn_about_legacy(
+
+# --------------------------------------------------------------------------- #
+# load_registry: legacy (pre-v0.4.4) formats → detected + disabled
+# --------------------------------------------------------------------------- #
+
+
+class TestLoadRegistryLegacyDetection:
+    """Pre-v0.4.4 Telegram-based formats are refused with a WARNING.
+
+    Wake-up is disabled (empty registry returned) until the operator
+    regenerates with ``a2a-mcp-bridge wake-registry init`` under v0.4.4.
+    """
+
+    def test_v043_shared_bot_format_rejected_with_warning(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """The new format must NOT trigger the legacy-migration warning."""
-        path = tmp_path / "reg.json"
-        path.write_text(
+        p = tmp_path / "wake.json"
+        p.write_text(
             json.dumps(
                 {
-                    "wake_bot_token": "T:TOK",
-                    "agents": {"vlbeau-main": {"chat_id": "-100111"}},
+                    "wake_bot_token": "111:OLD",
+                    "agents": {
+                        "vlbeau-main": {
+                            "chat_id": "-1001234567890",
+                            "thread_id": 5,
+                        }
+                    },
                 }
             )
         )
-        with caplog.at_level("WARNING", logger="a2a_mcp_bridge.wake"):
-            load_registry(str(path))
-        assert not any("legacy" in r.message.lower() for r in caplog.records)
+        with caplog.at_level("WARNING"):
+            secret, entries = load_registry(str(p))
+        assert secret is None
+        assert entries == {}
+        assert any(
+            "legacy" in rec.message.lower()
+            and "wake-up is disabled" in rec.message.lower()
+            for rec in caplog.records
+        )
+
+    def test_v03_per_agent_token_format_rejected_with_warning(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        p = tmp_path / "wake.json"
+        p.write_text(
+            json.dumps(
+                {
+                    "vlbeau-main": {"bot_token": "111:X", "chat_id": "1000"},
+                    "vlbeau-glm51": {"bot_token": "222:Y", "chat_id": "2000"},
+                }
+            )
+        )
+        with caplog.at_level("WARNING"):
+            secret, entries = load_registry(str(p))
+        assert secret is None
+        assert entries == {}
+        assert any(
+            "legacy" in rec.message.lower() for rec in caplog.records
+        )
+
+    def test_unrecognised_structure_raises(self, tmp_path: Path) -> None:
+        """Random JSON that doesn't match any format raises ValueError."""
+        p = tmp_path / "wake.json"
+        p.write_text(json.dumps({"agents": {"foo": {"wrong": "shape"}}}))
+        with pytest.raises(ValueError, match="unrecognised structure"):
+            load_registry(str(p))
 
 
 # --------------------------------------------------------------------------- #
-# TelegramWaker.wake — legacy mode (per-agent token)
+# WebhookWaker core behavior
 # --------------------------------------------------------------------------- #
+
+
+SECRET = "test-secret-for-hmac-signing-x64x64x64x64x64x64x"
 
 
 @pytest.fixture
-def waker_registry() -> dict[str, WakeEntry]:
+def registry() -> dict[str, WakeEntry]:
     return {
-        "vlbeau-main": WakeEntry(bot_token="T:TOKEN", chat_id="999"),
+        "vlbeau-main": WakeEntry(
+            wake_webhook_url="http://127.0.0.1:8651/webhooks/wake"
+        ),
+        "vlbeau-glm51": WakeEntry(
+            wake_webhook_url="http://127.0.0.1:8653/webhooks/wake"
+        ),
     }
 
 
-class TestTelegramWakerLegacy:
-    def test_wake_posts_to_sendmessage_endpoint(
-        self, waker_registry: dict[str, WakeEntry]
-    ) -> None:
-        waker = TelegramWaker(waker_registry)
-        fake_response = MagicMock()
-        fake_response.__enter__.return_value = fake_response
-        fake_response.read.return_value = b'{"ok":true}'
-        fake_response.status = 200
+class TestWebhookWakerCore:
+    """End-to-end behavior: POST HMAC-signed JSON, swallow errors, return bool."""
 
-        with patch("a2a_mcp_bridge.wake.urlopen", return_value=fake_response) as up:
+    def test_configured_property(
+        self, registry: dict[str, WakeEntry]
+    ) -> None:
+        assert WebhookWaker(registry, shared_secret=SECRET).configured is True
+        assert WebhookWaker(registry, shared_secret=None).configured is False
+        assert WebhookWaker({}, shared_secret=SECRET).configured is False
+
+    def test_has_and_len(self, registry: dict[str, WakeEntry]) -> None:
+        waker = WebhookWaker(registry, shared_secret=SECRET)
+        assert waker.has("vlbeau-main") is True
+        assert waker.has("vlbeau-unknown") is False
+        assert len(waker) == 2
+
+    def test_wake_posts_to_configured_url(
+        self, registry: dict[str, WakeEntry]
+    ) -> None:
+        waker = WebhookWaker(registry, shared_secret=SECRET)
+        mock_resp = MagicMock()
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_resp.status = 202
+        with patch("a2a_mcp_bridge.wake.urlopen", return_value=mock_resp) as m:
             ok = waker.wake("vlbeau-main", sender_id="vlbeau-glm51")
-
         assert ok is True
-        assert up.call_count == 1
-        request_obj = up.call_args.args[0]
-        # URL must target the legacy per-agent token
-        assert "T:TOKEN" in request_obj.full_url
-        assert request_obj.full_url.endswith("/sendMessage")
-        body = request_obj.data.decode("utf-8")
-        assert "chat_id=999" in body
-        assert "vlbeau-glm51" in body  # sender name mentioned
+        req = m.call_args[0][0]
+        assert req.full_url == "http://127.0.0.1:8651/webhooks/wake"
+        assert req.get_method() == "POST"
 
-    def test_wake_unknown_agent_returns_false_no_http(
-        self, waker_registry: dict[str, WakeEntry]
+    def test_wake_sends_hmac_sha256_signature(
+        self, registry: dict[str, WakeEntry]
     ) -> None:
-        waker = TelegramWaker(waker_registry)
-        with patch("a2a_mcp_bridge.wake.urlopen") as up:
-            assert waker.wake("ghost-agent", sender_id="alice") is False
-        up.assert_not_called()
+        """The X-Webhook-Signature header must match HMAC(secret, body)."""
+        waker = WebhookWaker(registry, shared_secret=SECRET)
+        mock_resp = MagicMock()
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_resp.status = 202
+        with patch("a2a_mcp_bridge.wake.urlopen", return_value=mock_resp) as m:
+            waker.wake("vlbeau-main", sender_id="vlbeau-glm51")
+        req = m.call_args[0][0]
+        body = req.data
+        sig = req.headers["X-webhook-signature"]  # urllib lower-cases
+        expected = hmac.new(
+            SECRET.encode("utf-8"), body, hashlib.sha256
+        ).hexdigest()
+        assert sig == expected
 
-    def test_wake_empty_registry_returns_false(self) -> None:
-        waker = TelegramWaker({})
-        with patch("a2a_mcp_bridge.wake.urlopen") as up:
-            assert waker.wake("anything", sender_id="alice") is False
-        up.assert_not_called()
-
-    def test_wake_swallows_http_errors(
-        self, waker_registry: dict[str, WakeEntry]
+    def test_wake_posts_json_with_sender_and_target(
+        self, registry: dict[str, WakeEntry]
     ) -> None:
-        waker = TelegramWaker(waker_registry)
+        waker = WebhookWaker(registry, shared_secret=SECRET)
+        mock_resp = MagicMock()
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_resp.status = 202
+        with patch("a2a_mcp_bridge.wake.urlopen", return_value=mock_resp) as m:
+            waker.wake("vlbeau-main", sender_id="vlbeau-glm51")
+        req = m.call_args[0][0]
+        body = json.loads(req.data)
+        assert body["sender"] == "vlbeau-glm51"
+        assert body["target"] == "vlbeau-main"
+        assert body["source"] == "a2a-mcp-bridge"
+        assert req.headers["Content-type"] == "application/json"
+
+    def test_wake_body_is_deterministic(
+        self, registry: dict[str, WakeEntry]
+    ) -> None:
+        """Same (sender, target) pair must produce byte-identical payloads.
+
+        Determinism matters because the HMAC signature depends on the body,
+        and retries (by the client) should produce identical signatures —
+        otherwise idempotency caches on the server wouldn't dedupe.
+        """
+        waker = WebhookWaker(registry, shared_secret=SECRET)
+        captured: list[bytes] = []
+
+        mock_resp = MagicMock()
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_resp.status = 202
+
+        def fake_urlopen(req, timeout=None):  # type: ignore[no-untyped-def]
+            captured.append(req.data)
+            return mock_resp
+
+        with patch("a2a_mcp_bridge.wake.urlopen", side_effect=fake_urlopen):
+            waker.wake("vlbeau-main", sender_id="vlbeau-glm51")
+            waker.wake("vlbeau-main", sender_id="vlbeau-glm51")
+        assert captured[0] == captured[1]
+
+    def test_wake_unknown_agent_no_http(
+        self, registry: dict[str, WakeEntry]
+    ) -> None:
+        waker = WebhookWaker(registry, shared_secret=SECRET)
+        with patch("a2a_mcp_bridge.wake.urlopen") as m:
+            ok = waker.wake("vlbeau-nobody", sender_id="vlbeau-glm51")
+        assert ok is False
+        m.assert_not_called()
+
+    def test_wake_without_secret_returns_false_no_http(
+        self, registry: dict[str, WakeEntry]
+    ) -> None:
+        waker = WebhookWaker(registry, shared_secret=None)
+        with patch("a2a_mcp_bridge.wake.urlopen") as m:
+            ok = waker.wake("vlbeau-main", sender_id="vlbeau-glm51")
+        assert ok is False
+        m.assert_not_called()
+
+    def test_wake_non_2xx_returns_false(
+        self, registry: dict[str, WakeEntry]
+    ) -> None:
+        waker = WebhookWaker(registry, shared_secret=SECRET)
+        mock_resp = MagicMock()
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_resp.status = 500
+        with patch("a2a_mcp_bridge.wake.urlopen", return_value=mock_resp):
+            ok = waker.wake("vlbeau-main", sender_id="vlbeau-glm51")
+        assert ok is False
+
+
+class TestWebhookWakerErrorSwallowing:
+    """The waker must never raise: all errors become ``False`` + logged."""
+
+    @pytest.fixture
+    def waker(self, registry: dict[str, WakeEntry]) -> WebhookWaker:
+        return WebhookWaker(registry, shared_secret=SECRET)
+
+    def test_http_error_returns_false(
+        self, waker: WebhookWaker, caplog: pytest.LogCaptureFixture
+    ) -> None:
         with patch(
             "a2a_mcp_bridge.wake.urlopen",
-            side_effect=HTTPError(url="x", code=403, msg="Forbidden", hdrs=None, fp=None),
-        ):
-            assert waker.wake("vlbeau-main", sender_id="a") is False
-
-    def test_wake_swallows_network_errors(
-        self, waker_registry: dict[str, WakeEntry]
-    ) -> None:
-        waker = TelegramWaker(waker_registry)
-        with patch("a2a_mcp_bridge.wake.urlopen", side_effect=URLError("network down")):
-            assert waker.wake("vlbeau-main", sender_id="a") is False
-
-    def test_wake_swallows_unexpected_exceptions(
-        self, waker_registry: dict[str, WakeEntry]
-    ) -> None:
-        waker = TelegramWaker(waker_registry)
-        with patch("a2a_mcp_bridge.wake.urlopen", side_effect=RuntimeError("boom")):
-            assert waker.wake("vlbeau-main", sender_id="a") is False
-
-    def test_message_contains_inbox_hint(
-        self, waker_registry: dict[str, WakeEntry]
-    ) -> None:
-        waker = TelegramWaker(waker_registry)
-        fake_response = MagicMock()
-        fake_response.__enter__.return_value = fake_response
-        fake_response.read.return_value = b"{}"
-        fake_response.status = 200
-
-        with patch("a2a_mcp_bridge.wake.urlopen", return_value=fake_response) as up:
-            waker.wake("vlbeau-main", sender_id="vlbeau-glm51")
-
-        body = up.call_args.args[0].data.decode("utf-8")
-        assert "agent_inbox" in body
-
-    def test_message_names_reply_target_explicitly(
-        self, waker_registry: dict[str, WakeEntry]
-    ) -> None:
-        """Regression guard (v0.4.1): wake-up text must name the reply-to
-        agent_id unambiguously."""
-        waker = TelegramWaker(waker_registry)
-        fake_response = MagicMock()
-        fake_response.__enter__.return_value = fake_response
-        fake_response.read.return_value = b"{}"
-        fake_response.status = 200
-
-        with patch("a2a_mcp_bridge.wake.urlopen", return_value=fake_response) as up:
-            waker.wake("vlbeau-main", sender_id="vlbeau-glm51")
-
-        import urllib.parse as _up
-
-        encoded = up.call_args.args[0].data.decode("utf-8")
-        parsed = dict(_up.parse_qsl(encoded))
-        text = parsed["text"]
-
-        assert "vlbeau-glm51" in text
-        assert "agent_inbox" in text
-        assert "agent_send" in text
-        assert 'target="vlbeau-glm51"' in text
-        assert "reply-to" in text.lower()
-
-    # ----- v0.4.2: forum topic routing via message_thread_id ---------------- #
-
-    def test_wake_posts_message_thread_id_when_set(self) -> None:
-        registry = {
-            "vlbeau-main": WakeEntry(
-                bot_token="T:TOKEN",
-                chat_id="-1001234567890",
-                thread_id=5,
+            side_effect=HTTPError(
+                url="http://x", code=401, msg="Unauthorized", hdrs=None, fp=None
             ),
-        }
-        waker = TelegramWaker(registry)
-        fake_response = MagicMock()
-        fake_response.__enter__.return_value = fake_response
-        fake_response.read.return_value = b"{}"
-        fake_response.status = 200
+        ), caplog.at_level("WARNING"):
+            ok = waker.wake("vlbeau-main", sender_id="vlbeau-glm51")
+        assert ok is False
+        assert any("HTTPError" in rec.message for rec in caplog.records)
 
-        with patch("a2a_mcp_bridge.wake.urlopen", return_value=fake_response) as up:
-            waker.wake("vlbeau-main", sender_id="vlbeau-glm51")
-
-        body = up.call_args.args[0].data.decode("utf-8")
-        assert "message_thread_id=5" in body
-        assert "chat_id=" in body
-
-    def test_wake_omits_message_thread_id_when_unset(
-        self, waker_registry: dict[str, WakeEntry]
+    def test_network_error_returns_false(
+        self, waker: WebhookWaker, caplog: pytest.LogCaptureFixture
     ) -> None:
-        waker = TelegramWaker(waker_registry)
-        fake_response = MagicMock()
-        fake_response.__enter__.return_value = fake_response
-        fake_response.read.return_value = b"{}"
-        fake_response.status = 200
+        with patch(
+            "a2a_mcp_bridge.wake.urlopen",
+            side_effect=URLError("connection refused"),
+        ), caplog.at_level("WARNING"):
+            ok = waker.wake("vlbeau-main", sender_id="vlbeau-glm51")
+        assert ok is False
+        assert any("network error" in rec.message for rec in caplog.records)
 
-        with patch("a2a_mcp_bridge.wake.urlopen", return_value=fake_response) as up:
-            waker.wake("vlbeau-main", sender_id="vlbeau-glm51")
-
-        body = up.call_args.args[0].data.decode("utf-8")
-        assert "message_thread_id" not in body
-
-
-# --------------------------------------------------------------------------- #
-# TelegramWaker.wake — shared-bot mode (v0.4.3+)
-# --------------------------------------------------------------------------- #
-
-
-class TestTelegramWakerSharedBot:
-    """Every wake-up is POSTed through ``shared_token`` regardless of target."""
-
-    def test_wake_uses_shared_token_not_entry_token(self) -> None:
-        """The shared token must be used even if the entry has a stale one."""
-        registry = {
-            "vlbeau-deepseek": WakeEntry(
-                bot_token="STALE:IGNORE_ME",  # should NOT be used
-                chat_id="-100111",
-                thread_id=9,
-            ),
-        }
-        waker = TelegramWaker(registry, shared_token="WAKE_BOT:TOKEN")
-        fake = MagicMock()
-        fake.__enter__.return_value = fake
-        fake.status = 200
-        with patch("a2a_mcp_bridge.wake.urlopen", return_value=fake) as up:
-            ok = waker.wake("vlbeau-deepseek", sender_id="vlbeau-glm51")
-        assert ok is True
-        url = up.call_args.args[0].full_url
-        assert "WAKE_BOT:TOKEN" in url
-        assert "STALE:IGNORE_ME" not in url
-
-    def test_wake_routes_to_correct_topic(self) -> None:
-        """Shared bot + thread_id → POST includes message_thread_id."""
-        registry = {
-            "vlbeau-deepseek": WakeEntry(bot_token="", chat_id="-100111", thread_id=9),
-        }
-        waker = TelegramWaker(registry, shared_token="WAKE:TOK")
-        fake = MagicMock()
-        fake.__enter__.return_value = fake
-        fake.status = 200
-        with patch("a2a_mcp_bridge.wake.urlopen", return_value=fake) as up:
-            waker.wake("vlbeau-deepseek", sender_id="vlbeau-glm51")
-        body = up.call_args.args[0].data.decode("utf-8")
-        assert "message_thread_id=9" in body
-        assert "chat_id=-100111" in body
-
-    def test_uses_shared_token_property_flag(self) -> None:
-        legacy = TelegramWaker({})
-        shared = TelegramWaker({}, shared_token="T:TOK")
-        assert legacy.uses_shared_token is False
-        assert shared.uses_shared_token is True
-
-    def test_empty_entry_token_in_legacy_mode_returns_false(self) -> None:
-        """Entries with no bot_token AND no shared_token cannot be waked."""
-        registry = {
-            "vlbeau-orphan": WakeEntry(bot_token="", chat_id="-100111", thread_id=3),
-        }
-        waker = TelegramWaker(registry)  # no shared_token
-        with patch("a2a_mcp_bridge.wake.urlopen") as up:
-            assert waker.wake("vlbeau-orphan", sender_id="a") is False
-        up.assert_not_called()
-
-
-# --------------------------------------------------------------------------- #
-# Self-wake guard (v0.4.3) — sender == target must NEVER trigger a POST
-# --------------------------------------------------------------------------- #
+    def test_unexpected_exception_returns_false(
+        self, waker: WebhookWaker, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with patch(
+            "a2a_mcp_bridge.wake.urlopen",
+            side_effect=RuntimeError("boom"),
+        ), caplog.at_level("WARNING"):
+            ok = waker.wake("vlbeau-main", sender_id="vlbeau-glm51")
+        assert ok is False
+        assert any("unexpected error" in rec.message for rec in caplog.records)
 
 
 class TestSelfWakeGuard:
-    def test_self_wake_is_silently_skipped_legacy(
-        self, waker_registry: dict[str, WakeEntry]
-    ) -> None:
-        waker = TelegramWaker(waker_registry)
-        with patch("a2a_mcp_bridge.wake.urlopen") as up:
-            assert waker.wake("vlbeau-main", sender_id="vlbeau-main") is False
-        up.assert_not_called()
+    """An agent waking itself is silently skipped (no HTTP call)."""
 
-    def test_self_wake_is_silently_skipped_shared(self) -> None:
-        registry = {"vlbeau-main": WakeEntry(bot_token="", chat_id="-100111")}
-        waker = TelegramWaker(registry, shared_token="T:TOK")
-        with patch("a2a_mcp_bridge.wake.urlopen") as up:
-            assert waker.wake("vlbeau-main", sender_id="vlbeau-main") is False
-        up.assert_not_called()
+    def test_self_wake_returns_false_no_http(
+        self, registry: dict[str, WakeEntry]
+    ) -> None:
+        waker = WebhookWaker(registry, shared_secret=SECRET)
+        with patch("a2a_mcp_bridge.wake.urlopen") as m:
+            ok = waker.wake("vlbeau-main", sender_id="vlbeau-main")
+        assert ok is False
+        m.assert_not_called()
+
+
+class TestSignBodyHelper:
+    """``_sign_body`` is exposed for reuse; make sure it matches HMAC-SHA256 hex."""
+
+    def test_matches_stdlib_hmac(self) -> None:
+        body = b'{"hello": "world"}'
+        sig = _sign_body(body, "secret")
+        expected = hmac.new(b"secret", body, hashlib.sha256).hexdigest()
+        assert sig == expected

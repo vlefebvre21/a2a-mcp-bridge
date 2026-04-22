@@ -2,7 +2,7 @@
 
 > MCP server that lets AI agents message each other — A2A-style peer-to-peer communication, exposed as MCP tools.
 
-**Status:** v0.4.3 — usable in production. Not yet published to PyPI; install from GitHub.
+**Status:** v0.4.4 — usable in production. Not yet published to PyPI; install from GitHub.
 
 ## Why
 
@@ -21,7 +21,7 @@ Five MCP tools, all stable since v0.4:
 
 | Tool | Description |
 |---|---|
-| `agent_send(target, message, metadata=None)` | Drop a message in another agent's inbox. Returns a `message_id`. Fires a real-time signal and an optional Telegram wake-up toward the recipient. |
+| `agent_send(target, message, metadata=None)` | Drop a message in another agent's inbox. Returns a `message_id`. Fires a real-time signal and an optional HTTP webhook wake-up toward the recipient. |
 | `agent_inbox(limit=10, unread_only=True)` | Read messages addressed to the calling agent. Atomically marks them as read when `unread_only=True`. |
 | `agent_list(active_within_days=7)` | List agents seen on the bus in the given window, with their capabilities and last-seen timestamps. |
 | `agent_subscribe(timeout_seconds=30, limit=10)` | Long-poll primitive: blocks up to `timeout_seconds` (server-capped at 55 s) waiting for new messages. Returns instantly if messages are already pending. |
@@ -38,79 +38,98 @@ always the SQLite file, but two advisory mechanisms wake consumers up:
 1. **Signal files** (`v0.2+`) — every `agent_send` writes
    `$A2A_SIGNAL_DIR/<recipient>.notify` (default `/tmp/a2a-signals/`). Any
    agent blocked in `agent_subscribe` wakes up immediately.
-2. **Telegram wake-up** (`v0.3+`) — if the recipient is listed in the wake
-   registry (see below), the bridge also POSTs a short prompt to the
-   recipient's Telegram bot so their gateway actually *processes* the new
-   message instead of sitting idle. Best-effort: any failure (missing entry,
-   HTTP error) is logged and never blocks the SQLite write.
+2. **HTTP webhook wake-up** (`v0.4.4+`) — if the recipient is listed in
+   the wake registry (see below), the bridge also POSTs an HMAC-signed
+   JSON payload to the recipient's local Hermes gateway webhook endpoint,
+   which spawns a real agent session that reads the inbox. Best-effort:
+   any failure (missing entry, HTTP error, network error) is logged and
+   never blocks the SQLite write.
+
+Prior to v0.4.4 the wake-up transport was Telegram. It was replaced by
+local HTTP webhooks because Telegram's "a bot never sees its own
+messages" rule made per-agent bot wake-ups unreliable in forum-topic
+supergroups, and the shared-wake-bot workaround still left the
+recipient's gateway deaf (it only polls its own bot, not the crier's).
+Webhook POSTs go straight to the recipient's gateway and never fail to
+reach the intended session loop.
 
 ### Wake registry (optional)
 
 ```bash
-# Build a registry from your ~/.hermes/profiles/*/.env files
+# Build a registry from your Hermes profiles (reads config.yaml +
+# webhook_subscriptions.json under each profile directory).
 a2a-mcp-bridge wake-registry init
 
 # Override the path via env var if you want
 export A2A_WAKE_REGISTRY=~/.a2a-wake-registry.json
 ```
 
-Each profile that defines `TELEGRAM_BOT_TOKEN` + `TELEGRAM_HOME_CHANNEL` is
-registered as `vlbeau-<profile>`; `~/.hermes/.env` maps to `vlbeau-opus`.
-Profiles with incomplete env are skipped silently.
+Each Hermes profile that has `platforms.webhook.enabled: true` in its
+`config.yaml` with a `port` and a `secret` is registered as
+`vlbeau-<profile>`. Profiles without a webhook config are skipped
+silently. All profiles must share the same HMAC secret so the bridge
+can sign any wake-up with a single key.
 
-#### Forum-topic routing (v0.4.2+) with a shared wake bot (v0.4.3+)
-
-If all your agents share a single Telegram supergroup with **Topics
-enabled** (aka *forum mode* — `is_forum: true`), wake-ups must be
-posted through a **single shared bot** rather than each recipient's
-own bot. Why: Telegram does not deliver a bot its own messages, so a
-bot can't wake itself up. Using a neutral sender (typically
-`vlbeau-main`'s `@VLBeauBot`) makes each wake-up land in the target's
-topic *as an update from another user*, which actually triggers the
-recipient's gateway.
-
-The v0.4.3+ registry format:
+#### Registry format (v0.4.4+)
 
 ```json
 {
-  "wake_bot_token": "123:ABC_WAKE_BOT",
+  "wake_webhook_secret": "<64-hex HMAC secret>",
   "agents": {
-    "vlbeau-main":  {"chat_id": "-1001234567890", "thread_id": 5},
-    "vlbeau-glm51": {"chat_id": "-1001234567890", "thread_id": 7},
-    "vlbeau-opus":  {"chat_id": "-1001234567890", "thread_id": 6}
+    "vlbeau-main":  {"wake_webhook_url": "http://127.0.0.1:8651/webhooks/wake"},
+    "vlbeau-glm51": {"wake_webhook_url": "http://127.0.0.1:8653/webhooks/wake"},
+    "vlbeau-opus":  {"wake_webhook_url": "http://127.0.0.1:8652/webhooks/wake"}
   }
 }
 ```
 
-Create topics once via the Bot API (or the Telegram UI) and record the
-returned `message_thread_id`:
+#### Hermes profile configuration
 
-```bash
-curl -s "https://api.telegram.org/bot${TOKEN}/createForumTopic" \
-  --data-urlencode "chat_id=@my_supergroup" \
-  --data-urlencode "name=glm51"
-# → {"ok":true,"result":{"message_thread_id":7,"name":"glm51",...}}
+Each Hermes profile needs a `wake` route on its webhook adapter. Minimal
+per-profile `config.yaml`:
+
+```yaml
+platforms:
+  webhook:
+    enabled: true
+    extra:
+      host: "127.0.0.1"
+      port: 8651            # unique per profile
+      rate_limit: 10        # requests / minute (defaults to 30)
+      secret: "<shared hex>"
 ```
 
-`thread_id` is optional and entries without it keep v0.4.1 behaviour
-(plain DM or the group's `General` topic). Re-running
-`wake-registry init` **preserves** any `thread_id` values already in
-the registry — it only refreshes `chat_id` and the top-level
-`wake_bot_token` from the Hermes `.env` files.
-
-#### Legacy per-agent DM wake-up (v0.3 - v0.4.2)
-
-If you don't have a supergroup and just want each agent to receive
-wake-ups in its own 1-on-1 DM chat, pass `--legacy-format` to
-`wake-registry init`:
+Then register the `wake` subscription (triggers an agent session loop
+on POST, reading the A2A inbox via the `a2a-inbox-triage` skill):
 
 ```bash
-a2a-mcp-bridge wake-registry init --legacy-format
+HERMES_HOME=~/.hermes/profiles/<name> \
+  hermes webhook subscribe wake \
+  --prompt "You have been woken up by the A2A bus. Check your inbox." \
+  --skills "a2a-inbox-triage" \
+  --secret "<shared hex>" \
+  --deliver log
 ```
 
-This emits the older shape with a `bot_token` per entry. Accepted
-indefinitely but deprecated — `load_registry()` logs a migration hint
-when it sees this format.
+Re-running `wake-registry init` overwrites the registry from the current
+profile state — the v0.4.4 format has no hand-editable fields to
+preserve. If a pre-v0.4.4 registry is found (old `wake_bot_token` or
+per-agent `bot_token` keys), a migration banner is printed and the file
+is rewritten with the new webhook payload.
+
+#### Migrating from v0.4.3 or earlier
+
+The v0.4.4 bridge **rejects** legacy Telegram-based registries (logs a
+`WARNING`, disables wake-up, continues running). To restore wake-up:
+
+1. Enable the webhook adapter on each gateway profile (config.yaml +
+   `hermes webhook subscribe wake ...` on each).
+2. Run `a2a-mcp-bridge wake-registry init` to regenerate the registry
+   in the v0.4.4 format.
+3. Restart the gateways.
+
+Telegram remains useful for visibility (topic-based supergroups still
+show agent-authored messages), but it is no longer a wake-up transport.
 
 ## Quick start
 
@@ -186,7 +205,7 @@ a2a-mcp-bridge register --all --hermes-profiles ~/.hermes/profiles
 | `A2A_AGENT_ID` | *required* | Identity this process advertises on the bus. |
 | `A2A_DB_PATH` | `./a2a-bus.sqlite` | SQLite file (shared by all agents on the bus). |
 | `A2A_SIGNAL_DIR` | `/tmp/a2a-signals` | Directory used by `agent_subscribe` for real-time wake-ups. |
-| `A2A_WAKE_REGISTRY` | `~/.a2a-wake-registry.json` | JSON wake registry. v0.4.3+ shape: `{"wake_bot_token": "...", "agents": {<id>: {"chat_id": ..., "thread_id": ...}}}`. Legacy per-agent `{<id>: {"bot_token": ..., "chat_id": ...}}` still accepted (deprecated). Missing/invalid file → feature silently disabled. |
+| `A2A_WAKE_REGISTRY` | `~/.a2a-wake-registry.json` | JSON wake registry. v0.4.4+ shape: `{"wake_webhook_secret": "...", "agents": {<id>: {"wake_webhook_url": "..."}}}`. Legacy Telegram-based registries (`wake_bot_token` or per-agent `bot_token`) are detected, logged with a migration warning, and treated as "wake-up disabled" until regenerated. Missing/invalid file → feature silently disabled. |
 
 ## CLI reference
 
@@ -196,7 +215,7 @@ a2a-mcp-bridge init               # initialize the SQLite schema
 a2a-mcp-bridge register [...]     # pre-register one or all agents
 a2a-mcp-bridge agents list        # show agents seen on the bus
 a2a-mcp-bridge messages tail      # tail recent messages
-a2a-mcp-bridge wake-registry init # build the Telegram wake registry from ~/.hermes
+a2a-mcp-bridge wake-registry init # build the webhook wake registry from ~/.hermes
 ```
 
 ## Roadmap
@@ -215,6 +234,17 @@ Shipped so far:
   of the registry posts every wake-up, so forum-topic routing actually wakes
   the recipient's gateway (a bot does not receive its own messages in a
   supergroup). Self-wake guard added. Legacy per-agent format still accepted.
+- **v0.4.3.1** — `wake-registry init` preserves `chat_id` across
+  regenerations (previously only `thread_id` was preserved; `chat_id`
+  was silently re-read from `.env` on every init, resetting supergroup
+  overrides to DM defaults).
+- **v0.4.4** — Wake-up transport migrated from Telegram to local HTTP
+  webhooks. A single shared HMAC secret signs every wake-up; each gateway
+  exposes `http://127.0.0.1:<port>/webhooks/wake` and triggers a real
+  agent session on POST. The Telegram-based transport is gone: it never
+  reliably woke gateways in forum-topic supergroups (a bot doesn't poll
+  another bot's messages). Legacy registries are detected and rejected
+  with a migration warning.
 
 Planned:
 
