@@ -150,7 +150,8 @@ class TestWakerEntryShape:
         reg_path = tmp_path / "wake.json"
         reg_path.write_text(json.dumps(reg))
 
-        loaded = load_registry(str(reg_path))
-        waker = TelegramWaker(loaded)
+        shared, loaded = load_registry(str(reg_path))
+        waker = TelegramWaker(loaded, shared_token=shared)
         assert waker.has("alice")
         assert loaded["alice"] == WakeEntry(bot_token="T:TOKEN", chat_id="111")
+        assert shared is None  # legacy format → no shared token

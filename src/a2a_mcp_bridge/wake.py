@@ -1,8 +1,8 @@
-"""Telegram wake-up layer for a2a-mcp-bridge (v0.3).
+"""Telegram wake-up layer for a2a-mcp-bridge.
 
 When an agent receives a message via ``agent_send``, we optionally send a short
-Telegram notification to the recipient's bot so the recipient's gateway wakes
-up and the agent gets a chance to process its inbox.
+Telegram notification to the recipient so the recipient's gateway wakes up and
+the agent gets a chance to process its inbox.
 
 This is a **best-effort** optimisation, just like the signal files:
 
@@ -13,24 +13,34 @@ This is a **best-effort** optimisation, just like the signal files:
 The canonical record of a message is still the SQLite store. Failing to wake
 the recipient must never prevent ``agent_send`` from storing the message.
 
-Registry format (JSON file, default ``~/.a2a-wake-registry.json``)::
+Registry format (JSON file, default ``~/.a2a-wake-registry.json``).
+
+**Preferred format (v0.4.3+) — single shared bot**::
 
     {
-        "vlbeau-main":  {"bot_token": "123:ABC", "chat_id": "1395012867"},
-        "vlbeau-glm51": {"bot_token": "123:ABC", "chat_id": "1395012867"}
+        "wake_bot_token": "123:ABC",
+        "agents": {
+            "vlbeau-main":  {"chat_id": "-1001234567890", "thread_id": 5},
+            "vlbeau-glm51": {"chat_id": "-1001234567890", "thread_id": 7}
+        }
     }
 
-Optional ``thread_id`` (v0.4.2) routes the wake-up to a specific forum topic
-in a Telegram supergroup — useful when all agents share one supergroup but
-each deserves its own topic to avoid wake-up crosstalk::
+A **single "wake bot"** token is used to POST every wake-up. In a Telegram
+supergroup with forum topics this is required: a bot does not receive its
+own messages, so a self-posted wake-up never reaches the bot's gateway.
+Posting via a neutral bot (typically ``@VLBeauBot`` / ``vlbeau-main``)
+gives the recipient's bot an actual incoming Telegram update, which is
+what the Hermes gateway listens for.
+
+**Legacy format (v0.3 - v0.4.2) — per-agent token**::
 
     {
-        "vlbeau-main":  {"bot_token": "123:ABC", "chat_id": "-1001234567890", "thread_id": 5},
-        "vlbeau-glm51": {"bot_token": "123:ABC", "chat_id": "-1001234567890", "thread_id": 7}
+        "vlbeau-main":  {"bot_token": "111:...", "chat_id": "1395012867"},
+        "vlbeau-glm51": {"bot_token": "222:...", "chat_id": "1395012867", "thread_id": 7}
     }
 
-Entries without ``thread_id`` keep the v0.4.1 behaviour (plain DM or group
-``General`` topic).
+Still accepted transparently; each wake-up is POSTed via the recipient's
+own ``bot_token``. A warning is logged to encourage migration.
 """
 
 from __future__ import annotations
@@ -54,10 +64,12 @@ DEFAULT_TIMEOUT_SECONDS = 5.0
 class WakeEntry:
     """One recipient's Telegram delivery details.
 
-    ``thread_id`` is optional (v0.4.2+): when set, the wake-up is routed to
-    the given forum topic in a Telegram supergroup via the
-    ``message_thread_id`` parameter of the sendMessage API. Absent / ``None``
-    falls back to the default chat target (DM or ``General`` topic).
+    ``bot_token`` is the legacy per-agent token (v0.3 - v0.4.2). In the
+    v0.4.3+ shared-wake-bot format it is an empty string and the waker
+    uses ``TelegramWaker.shared_token`` instead.
+
+    ``thread_id`` is optional: when set, the wake-up is routed to the given
+    forum topic via Telegram's ``message_thread_id`` parameter.
     """
 
     bot_token: str
@@ -65,16 +77,59 @@ class WakeEntry:
     thread_id: int | None = None
 
 
-def load_registry(path: str) -> dict[str, WakeEntry]:
-    """Load the JSON wake registry from ``path``.
+def _parse_entry(agent_id: str, entry: Any, *, require_token: bool) -> WakeEntry:
+    """Validate and coerce a single registry entry into a :class:`WakeEntry`."""
+    if not isinstance(entry, dict):
+        raise ValueError(f"wake registry entry for {agent_id!r} must be an object")
 
-    Returns an empty dict if the file does not exist (lets the caller treat
-    wake-up as opt-in without extra plumbing). Raises :class:`ValueError` if
-    the file exists but is malformed.
+    if require_token:
+        token = entry.get("bot_token")
+        if not isinstance(token, str) or not token:
+            raise ValueError(
+                f"wake registry entry for {agent_id!r} is missing a string 'bot_token'"
+            )
+    else:
+        # Shared-wake-bot format: per-agent token is not used.
+        token = ""
+
+    chat_id = entry.get("chat_id")
+    if not isinstance(chat_id, str) or not chat_id:
+        raise ValueError(
+            f"wake registry entry for {agent_id!r} is missing a string 'chat_id'"
+        )
+
+    # thread_id lives under "thread_id" (preferred, shorter) but we also
+    # accept "message_thread_id" because that is the Telegram Bot API name
+    # and some operators will type it by reflex.
+    thread_id = entry.get("thread_id")
+    if thread_id is None:
+        thread_id = entry.get("message_thread_id")
+    if thread_id is not None and (
+        not isinstance(thread_id, int) or isinstance(thread_id, bool)
+    ):
+        raise ValueError(
+            f"wake registry entry for {agent_id!r} has a non-integer 'thread_id'"
+        )
+
+    return WakeEntry(bot_token=token, chat_id=chat_id, thread_id=thread_id)
+
+
+def load_registry(path: str) -> tuple[str | None, dict[str, WakeEntry]]:
+    """Load the wake registry from ``path``.
+
+    Returns a ``(shared_token, entries)`` tuple:
+
+    * ``shared_token`` is the shared wake-bot token (v0.4.3+ format) or
+      ``None`` when the legacy per-agent-token format is in use.
+    * ``entries`` maps ``agent_id`` to its :class:`WakeEntry`.
+
+    A missing file returns ``(None, {})`` so callers can treat wake-up as
+    opt-in. A malformed file raises :class:`ValueError`.
     """
     p = Path(path)
     if not p.is_file():
-        return {}
+        return None, {}
+
     try:
         raw: Any = json.loads(p.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
@@ -83,25 +138,43 @@ def load_registry(path: str) -> dict[str, WakeEntry]:
     if not isinstance(raw, dict):
         raise ValueError(f"wake registry {path} must be a JSON object at top level")
 
-    registry: dict[str, WakeEntry] = {}
+    entries: dict[str, WakeEntry] = {}
+
+    # Detect format: v0.4.3+ has top-level "wake_bot_token" + "agents" dict.
+    shared_token = raw.get("wake_bot_token")
+    if shared_token is not None:
+        if not isinstance(shared_token, str) or not shared_token:
+            raise ValueError(
+                f"wake registry {path}: 'wake_bot_token' must be a non-empty string"
+            )
+        agents_raw = raw.get("agents")
+        if not isinstance(agents_raw, dict):
+            raise ValueError(
+                f"wake registry {path}: 'agents' must be an object when "
+                f"'wake_bot_token' is set"
+            )
+        for agent_id, entry in agents_raw.items():
+            entries[agent_id] = _parse_entry(
+                agent_id, entry, require_token=False
+            )
+        return shared_token, entries
+
+    # Legacy format (v0.3 - v0.4.2): each entry carries its own bot_token.
+    # Accepted for backward compatibility but logged as deprecated.
+    legacy_keys_present = any(
+        isinstance(v, dict) and "bot_token" in v for v in raw.values()
+    )
+    if legacy_keys_present:
+        logger.warning(
+            "wake registry %s uses the legacy per-agent bot_token format; "
+            "consider migrating to the shared-wake-bot format (v0.4.3+) so "
+            "that Telegram supergroups with forum topics work correctly. "
+            "Run `a2a-mcp-bridge wake-registry init` to regenerate.",
+            path,
+        )
     for agent_id, entry in raw.items():
-        if not isinstance(entry, dict):
-            raise ValueError(f"wake registry entry for {agent_id!r} must be an object")
-        token = entry.get("bot_token")
-        chat_id = entry.get("chat_id")
-        if not isinstance(token, str) or not token:
-            raise ValueError(
-                f"wake registry entry for {agent_id!r} is missing a string 'bot_token'"
-            )
-        if not isinstance(chat_id, str) or not chat_id:
-            raise ValueError(f"wake registry entry for {agent_id!r} is missing a string 'chat_id'")
-        thread_id = entry.get("thread_id")
-        if thread_id is not None and (not isinstance(thread_id, int) or isinstance(thread_id, bool)):
-            raise ValueError(
-                f"wake registry entry for {agent_id!r} has a non-integer 'thread_id'"
-            )
-        registry[agent_id] = WakeEntry(bot_token=token, chat_id=chat_id, thread_id=thread_id)
-    return registry
+        entries[agent_id] = _parse_entry(agent_id, entry, require_token=True)
+    return None, entries
 
 
 def _format_message(sender_id: str) -> str:
@@ -120,15 +193,27 @@ def _format_message(sender_id: str) -> str:
 
 
 class TelegramWaker:
-    """Best-effort Telegram notifier, keyed by recipient agent_id."""
+    """Best-effort Telegram notifier, keyed by recipient agent_id.
+
+    In the v0.4.3+ shared-wake-bot format, every wake-up is POSTed using
+    ``shared_token``. In the legacy format, each recipient's
+    ``WakeEntry.bot_token`` is used.
+
+    Self-wake (``agent_id == sender_id``) is skipped unconditionally: an
+    agent sending a message to itself would otherwise trigger a wake-up
+    loop on the same gateway.
+    """
 
     def __init__(
         self,
         registry: dict[str, WakeEntry],
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+        *,
+        shared_token: str | None = None,
     ) -> None:
         self._registry = registry
         self._timeout = timeout_seconds
+        self._shared_token = shared_token
 
     def has(self, agent_id: str) -> bool:
         return agent_id in self._registry
@@ -136,27 +221,48 @@ class TelegramWaker:
     def __len__(self) -> int:
         return len(self._registry)
 
+    @property
+    def uses_shared_token(self) -> bool:
+        """Whether this waker posts every wake-up via a single shared bot."""
+        return self._shared_token is not None
+
     def wake(self, agent_id: str, sender_id: str) -> bool:
         """Send a wake-up Telegram message to ``agent_id``'s registered bot.
 
         Returns ``True`` on HTTP 2xx, ``False`` on any other outcome (unknown
-        agent, HTTP error, network error, unexpected exception). Never raises.
+        agent, self-wake skip, HTTP error, network error, unexpected
+        exception). Never raises.
         """
+        if agent_id == sender_id:
+            # An agent waking itself is almost certainly a bug upstream — skip
+            # silently rather than risk a wake-loop on the same gateway.
+            logger.debug("wake skipped: sender == target (%s)", agent_id)
+            return False
+
         entry = self._registry.get(agent_id)
         if entry is None:
             logger.debug("wake skipped: %s not in registry", agent_id)
             return False
 
-        url = f"{TELEGRAM_API_BASE}/bot{entry.bot_token}/sendMessage"
+        # Pick the token: shared (v0.4.3+) wins over per-agent (legacy).
+        token = self._shared_token if self._shared_token else entry.bot_token
+        if not token:
+            logger.debug(
+                "wake skipped: %s has no bot_token and no shared token is set",
+                agent_id,
+            )
+            return False
+
+        url = f"{TELEGRAM_API_BASE}/bot{token}/sendMessage"
         params: dict[str, str] = {
             "chat_id": entry.chat_id,
             "text": _format_message(sender_id),
             "disable_notification": "false",
         }
         if entry.thread_id is not None:
-            # Forum topic routing (Telegram Bot API field name is
-            # ``message_thread_id``; we keep ``thread_id`` in the registry for
-            # ergonomics).
+            # Forum topic routing. Telegram's Bot API field is
+            # ``message_thread_id``; we keep ``thread_id`` in the registry
+            # for ergonomics.
             params["message_thread_id"] = str(entry.thread_id)
         payload = urlencode(params).encode("utf-8")
         req = Request(
