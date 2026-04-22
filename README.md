@@ -577,12 +577,13 @@ Shipped so far:
 
 Planned:
 
-- **v0.5** — Multi-session concurrency mitigations (see
-  [ADR-001](docs/adr/ADR-001-multi-session-concurrency.md)):
-  `agent_inbox_peek(since_ts)` for non-destructive reads, optional
+- **v0.5** — Multi-session concurrency resolution via leader-at-gateway
+  (see [ADR-001](docs/adr/ADR-001-multi-session-concurrency.md)). Bridge
+  side: `agent_inbox_peek(since_ts)` non-destructive read, optional
   `session_id` metadata on `agent_send`, session-tagged logs, clarified
-  tool docstrings. Plus observability (per-tool stats, structured JSON
-  logs).
+  tool docstrings. Paired with Hermes-side gateway cache work (tracked
+  separately) that makes the gateway the sole bus subscriber per
+  profile. Plus observability (per-tool stats, structured JSON logs).
 - **Later** — Agent Cards (A2A-compliant metadata), HTTP A2A endpoint in front
   of the MCP server, allowlist + token-based auth, optional Redis / Postgres
   backend for multi-host deployments, `agent_reply` + threaded conversations.
