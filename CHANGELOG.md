@@ -4,6 +4,108 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.3] - 2026-04-22
+
+Shared-wake-bot format. Resolves the self-wake dead-end introduced by
+v0.4.2's forum-topic routing: in a Telegram supergroup, a bot never
+receives messages it posted itself, so routing the wake-up through the
+recipient's own token made the wake-up land in the topic but never
+trigger the recipient's gateway. v0.4.3 posts every wake-up through a
+single shared bot (typically `vlbeau-main`'s `@VLBeauBot`) so each
+recipient sees an actual incoming update from a different sender.
+
+### Added
+- **Registry format v2** — top-level `wake_bot_token` + `agents` object::
+
+    ```json
+    {
+      "wake_bot_token": "123:ABC",
+      "agents": {
+        "vlbeau-main":  {"chat_id": "-1001234567890", "thread_id": 5},
+        "vlbeau-glm51": {"chat_id": "-1001234567890", "thread_id": 7}
+      }
+    }
+    ```
+
+  The single `wake_bot_token` is used to POST every wake-up. Each entry
+  carries only `chat_id` (+ optional `thread_id`) — per-agent
+  `bot_token` is no longer needed or stored.
+
+- **Self-wake guard** — `TelegramWaker.wake()` silently returns `False`
+  when `agent_id == sender_id`, preventing wake-loops on the same
+  gateway if a buggy caller ever sends a message to itself.
+
+- **`uses_shared_token` property** on `TelegramWaker` for introspection
+  and future observability work.
+
+- **`message_thread_id` alias** — the registry accepts both `thread_id`
+  (preferred, shorter) and `message_thread_id` (Telegram-native) on
+  each entry. Operators typing the Bot API name by reflex no longer get
+  a silent drop.
+
+- **CLI `--wake-bot-profile <name>`** — selects the Hermes profile whose
+  `TELEGRAM_BOT_TOKEN` becomes the shared wake bot (default: `main`).
+
+- **CLI `--legacy-format`** — emits the v0.3 - v0.4.2 JSON shape for
+  operators who explicitly want per-agent DM wake-up (no supergroup).
+
+### Changed
+- **`load_registry()`** now returns a `(shared_token, entries)` tuple
+  instead of just `entries`. Callers inside the bridge are updated
+  (`server._load_waker`). External callers must unpack the tuple.
+
+- **`wake-registry init`** output now includes the format mode in its
+  title (`"shared-bot (main)"` vs `"legacy per-agent"`) so operators
+  can tell at a glance which shape they just wrote.
+
+- **`wake-registry init` errors loudly** when the new format is
+  requested but no wake-bot token can be resolved (profile missing
+  `TELEGRAM_BOT_TOKEN` and no prior registry to reuse from). Previously
+  this would have silently produced an unusable registry.
+
+### Deprecated
+- **Legacy per-agent `bot_token` format** (v0.3 - v0.4.2). Still accepted
+  by `load_registry()` — existing registries keep working — but
+  `load_registry()` now logs a migration warning the first time it
+  parses one. Run `a2a-mcp-bridge wake-registry init` to upgrade.
+
+### Tests
+- Test count: 111 (up from 96 in v0.4.2), ruff clean, mypy clean.
+- New in `tests/test_wake.py`:
+  - Full `TestLoadRegistrySharedBot` class (6 tests: happy path, empty
+    token rejected, agents must be dict, chat_id required,
+    `message_thread_id` alias accepted, no legacy warning).
+  - `TestTelegramWakerSharedBot` (4 tests: shared token wins over entry
+    token, thread_id routing, `uses_shared_token` flag, orphan entry
+    with no token returns False).
+  - `TestSelfWakeGuard` (2 tests: legacy + shared mode, both skip and
+    make no HTTP call).
+  - `test_legacy_format_warns_about_migration` — regression guard that
+    the deprecation warning is actually emitted.
+- New in `tests/test_cli_wake_registry.py`:
+  - `test_wake_registry_init_defaults_to_shared_bot_format`
+  - `test_wake_registry_init_uses_custom_wake_bot_profile`
+  - `test_wake_registry_init_errors_when_wake_bot_token_missing`
+  - `test_wake_registry_init_reuses_prior_wake_bot_token`
+  - `test_wake_registry_init_preserves_thread_id_across_regenerations`
+  - `test_wake_registry_init_migrates_legacy_prior_registry`
+  - `test_legacy_format_emits_old_shape`
+
+### Migration
+Existing v0.4.2 registries continue to work without change. To adopt
+the shared-wake-bot format (recommended for all supergroup setups):
+
+1. Verify `~/.hermes/profiles/main/.env` has a valid
+   `TELEGRAM_BOT_TOKEN` — that token becomes the shared wake bot.
+2. Run `a2a-mcp-bridge wake-registry init` — the command detects any
+   prior `thread_id` overrides and carries them forward into the new
+   format.
+3. Restart the Hermes gateways so MCP bridge child processes reload
+   the registry.
+
+Operators who prefer per-agent DM wake-ups (no supergroup) should run
+`a2a-mcp-bridge wake-registry init --legacy-format` instead.
+
 ## [0.4.2] - 2026-04-22
 
 Forum-topic support for Telegram wake-ups, resolving Issue #4 (all nine
