@@ -128,8 +128,73 @@ The v0.4.4 bridge **rejects** legacy Telegram-based registries (logs a
    in the v0.4.4 format.
 3. Restart the gateways.
 
-Telegram remains useful for visibility (topic-based supergroups still
-show agent-authored messages), but it is no longer a wake-up transport.
+Telegram remains available for human↔agent interaction (you message an
+agent in its topic, the agent replies there), but it is no longer a
+wake-up transport and is **not** an A2A observability channel either —
+see the section below.
+
+## Telegram front-end — what it is (and isn't) since v0.4.4
+
+Before v0.4.4, the forum-topic supergroup was load-bearing: it
+delivered wake-ups, it routed replies, and it incidentally gave you a
+window on the bus. v0.4.4 moved wake-up to local HTTP and the whole
+routing layer to SQLite. That leaves the supergroup with **one
+surviving role**: it's a multi-agent Telegram front-end for humans.
+
+Concretely:
+
+- ✅ You post in a topic → the matching agent wakes up and replies
+  there. This is just "Telegram → Hermes gateway" — it has nothing
+  to do with the A2A bus.
+- ❌ Agent A calls `agent_send(target="agent-b", ...)` → **nothing
+  appears in Telegram.** The message goes to SQLite, the wake POST
+  goes over loopback HTTP, agent B reads its inbox via
+  `agent_inbox()`. The supergroup is silent during A2A traffic.
+
+So if you're using the supergroup hoping to watch agents talk to each
+other, you're watching the wrong window. Use the SQLite inspection
+commands in the Deployment guide instead (`sqlite3 ~/.a2a-bus.sqlite
+'SELECT ... FROM messages ORDER BY created_at DESC'`).
+
+### Do you still need the supergroup?
+
+Honest answer: **probably not**, if all you do is message one agent at
+a time. The supergroup made sense when routing was topic-based; with
+v0.4.4 it's just cosmetic grouping. The alternatives, ranked by
+simplicity:
+
+1. **Private DMs, one per agent.** Simplest. Each agent gets its own
+   bot or its own chat_id. Zero topic routing, zero shared-state
+   surprises (like every profile sharing the same `chat_id` in its
+   `.env`, which the forum setup requires). Downside: nine separate
+   chats in your Telegram sidebar.
+
+2. **One supergroup, non-forum, with `/mention`-based routing.** One
+   chat_id shared by all profiles, but no topics — each profile
+   responds only when addressed by its `A2A_AGENT_ID`. Less clutter
+   than option 1, no forum overhead.
+
+3. **Supergroup with forum topics (current setup).** One chat_id + one
+   `thread_id` per profile. Nice visual separation, but comes with:
+   forum-topic routing code, `thread_id` preservation across config
+   regenerations, the "bot never sees its own topic messages" quirk
+   (harmless now that wake-up is HTTP but still confusing), and the
+   multi-profile-shares-one-chat gotcha noted in issue #4.
+
+4. **No Telegram at all.** Drive everything via the Hermes CLI / ACP
+   / other adapters. The A2A bus doesn't need Telegram to function.
+
+For a pure developer-console workflow, options 1, 2, or 4 are cleaner
+than the current forum setup. The project still supports (3) because
+migrating away is work and the forum UX has genuine benefits on
+mobile — but don't keep it *because* of the A2A bus. It doesn't help
+there.
+
+If you want a real observability channel for the bus (every
+`agent_send` mirrored to a read-only destination — logs, a dedicated
+Telegram topic, a Discord channel, etc.), that's a separate feature,
+not something the current supergroup provides. Open an issue if you'd
+like to discuss it.
 
 ## Deployment guide (v0.4.4+)
 
