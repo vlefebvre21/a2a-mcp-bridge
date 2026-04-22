@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sqlite3
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -30,7 +31,7 @@ app = typer.Typer(
 )
 agents_app = typer.Typer(help="Manage and inspect agents.")
 messages_app = typer.Typer(help="Inspect messages.")
-wake_registry_app = typer.Typer(help="Manage the Telegram wake-up registry.")
+wake_registry_app = typer.Typer(help="Manage the webhook wake-up registry.")
 app.add_typer(agents_app, name="agents")
 app.add_typer(messages_app, name="messages")
 app.add_typer(wake_registry_app, name="wake-registry")
@@ -459,6 +460,11 @@ def wake_registry_init(
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    # Registry carries ``wake_webhook_secret`` in clear — tighten perms so a
+    # multi-user host can't read it via the default umask (0644). Best-effort:
+    # some filesystems (mounted FAT/exFAT, Windows shares) reject chmod.
+    with suppress(OSError):
+        out_path.chmod(0o600)
 
     if not registry_agents:
         console.print(
