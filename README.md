@@ -535,6 +535,53 @@ a2a-mcp-bridge register --all --hermes-profiles ~/.hermes/profiles
 | `A2A_DB_PATH` | `./a2a-bus.sqlite` | SQLite file (shared by all agents on the bus). |
 | `A2A_SIGNAL_DIR` | `/tmp/a2a-signals` | Directory used by `agent_subscribe` for real-time wake-ups. |
 | `A2A_WAKE_REGISTRY` | `~/.a2a-wake-registry.json` | JSON wake registry. v0.4.4+ shape: `{"wake_webhook_secret": "...", "agents": {<id>: {"wake_webhook_url": "..."}}}`. Legacy Telegram-based registries (`wake_bot_token` or per-agent `bot_token`) are detected, logged with a migration warning, and treated as "wake-up disabled" until regenerated. Missing/invalid file → feature silently disabled. |
+| `A2A_LOG_JSON` | *unset* | If set to `1` / `true` / `yes`, every tool call emits a one-object-per-line JSON log record (schema: `ts`, `level`, `event`, `agent_id`, + `session_id`/`message_id`/`target`/`duration_ms`/`body_hash`/`error_code` when applicable). Unset keeps the pre-v0.5 plain-text format. Evaluated at import time — change requires a server restart. |
+| `A2A_LOG_LEVEL` | `INFO` | Log verbosity. |
+
+## Multi-session concurrency (ADR-001) & MCP docstring visibility
+
+Since v0.5, every MCP tool's docstring opens with a short "Note
+(multi-session)" paragraph that clarifies a critical property of the bus:
+**`agent_id` identifies a profile, not a conversation**. A single profile
+can be served concurrently by multiple Hermes sessions (Telegram, webhook
+wake-up, cron, CLI) behind a local gateway cache — see
+[`docs/adr/ADR-001-multi-session-concurrency.md`](docs/adr/ADR-001-multi-session-concurrency.md)
+for the full model and the v0.5 bridge-side primitives that support it:
+
+1. `agent_inbox_peek(since_ts, limit)` — read-only inbox view, no
+   mark-as-read. Safe to call concurrently from any session. Used by the
+   gateway for cache recovery and by tooling that wants a global view.
+2. Optional `metadata.session_id` on `agent_send` — a reserved key (≤ 128
+   chars) that gets hoisted into a dedicated column and surfaced at the top
+   level of the `agent_inbox` / `agent_inbox_peek` payload, so recipients
+   can correlate a reply with the exact sender session. Validation errors:
+   `SESSION_ID_INVALID`, `SESSION_ID_TOO_LARGE`.
+3. Structured logging — every tool call emits one record with a minimum
+   schema (`ts`, `level`, `event`, `agent_id`) plus optional `session_id`,
+   `message_id`, `target`, `duration_ms`, `body_hash`, `error_code`. Toggle
+   JSON output via `A2A_LOG_JSON=1`. Bodies and caller metadata are never
+   logged verbatim — only a 16-hex `blake2b(digest_size=8)` fingerprint.
+4. Optional `session_id` parameter on every read tool (`agent_inbox`,
+   `agent_inbox_peek`, `agent_list`, `agent_subscribe`) for log tagging
+   from non-`agent_send` call sites.
+
+### FastMCP docstring visibility caveat
+
+FastMCP serves each MCP tool's first docstring line as its tool
+description, but **ignores everything after the first blank line** when
+streaming tool metadata to some MCP clients (observed on Hermes'
+stdio client, 2026-04-22, with `fastmcp` 2.x). For that reason the full
+"Note (multi-session)" paragraph is also present here in the README as a
+single source of truth, and individual tool docstrings point back to the
+ADR rather than duplicating the full design rationale.
+
+**Also note**: FastMCP rejects any MCP tool parameter whose name starts
+with an underscore (`InvalidSignature: Parameter _foo cannot start with '_'`).
+The plumbing-style convention "prefix private-ish metadata with `_`" that
+works in ordinary Python code is therefore unusable at the MCP boundary.
+The public `session_id` parameter on the v0.5 read tools carries no
+underscore for that reason, even though its role is conceptually
+out-of-band from business input.
 
 ## CLI reference
 

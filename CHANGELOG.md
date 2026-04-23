@@ -4,6 +4,75 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-04-23
+
+**Theme** — bridge-side primitives for multi-session concurrency (ADR-001
+Option A′: leader-at-gateway). The bridge now ships the building blocks
+the Hermes gateway needs to recover its inbox cache across process
+restarts and to correlate log lines across concurrent agent sessions.
+
+### Added
+- **`agent_inbox_peek(since_ts?, limit=50)`** — read-only inbox view that
+  never mutates `read_at`. Returns the same message payload shape as
+  `agent_inbox`, including already-read messages with their `read_at`
+  populated. When `since_ts` is supplied, messages are returned ASC by
+  `created_at` (replay order); otherwise newest-first. Primary consumer
+  is the Hermes gateway reconstructing its local cache after a restart
+  or when lagging behind the bus, but external tooling can also use it
+  to inspect an agent's history without consuming pending messages.
+- **`messages.sender_session_id` column** — optional opaque correlator
+  (≤ 128 bytes UTF-8, nullable) stored alongside every inbound message. Payload
+  shapes of `agent_inbox`, `agent_inbox_peek`, and `agent_subscribe` now
+  include `"sender_session_id"` for every message (always present, `null`
+  when absent). Pre-v0.5 callers that ignore unknown keys are unaffected.
+- **`session_id` session tagging on read tools** — `agent_inbox`,
+  `agent_inbox_peek`, `agent_list`, and `agent_subscribe` accept an
+  optional `session_id: str | None = None` kwarg. The bridge does not
+  interpret the value beyond tagging its log events with it, enabling
+  end-to-end log correlation when multiple gateway sessions operate
+  concurrently on the same bridge (ADR-001 §4 #3).
+- **`agent_send` session propagation** — when the caller supplies
+  `metadata={"session_id": "..."}`, the value is stored in
+  `messages.sender_session_id` and surfaced to the recipient's inbox
+  payload. Non-string or oversize values are rejected with error codes
+  `SESSION_ID_INVALID` / `SESSION_ID_TOO_LARGE` (≤ 128 bytes UTF-8).
+- **`src/a2a_mcp_bridge/logging_ext.py`** — structured logging helper.
+  Minimum schema: `{ts, level, event, agent_id}`; optional extras:
+  `session_id, message_id, target, duration_ms, body_hash, error_code`.
+  Two output formats, toggled at import time by `A2A_LOG_JSON`:
+  - `A2A_LOG_JSON=1` → one JSON object per line (log-shipper friendly).
+  - unset / anything else → classic plain-text matching the pre-v0.5
+    format (no existing tailer breaks).
+  Message bodies are NEVER logged verbatim; only a 16-hex
+  `blake2b(digest_size=8)` `body_hash` is emitted — traceable, non-PII.
+
+### Changed
+- Every MCP tool handler now measures its own wall time and emits one
+  INFO log record at completion (or WARN on the `agent_send` error
+  path), carrying `event`, `agent_id`, `duration_ms`, and when relevant
+  `session_id`, `target`, `message_id`, `body_hash`, `error_code`.
+- **Schema migration is idempotent.** Existing DBs add the new column
+  via `ALTER TABLE ... ADD COLUMN sender_session_id TEXT` on first open;
+  re-opening an already-migrated DB is a no-op. Downgrading to v0.4.x
+  is safe — the column is simply unused.
+
+### Notes / caveats
+- **FastMCP parameter convention**: the `session_id` parameter on read
+  tools is spelled without an underscore prefix. FastMCP's signature
+  validator rejects any tool parameter starting with `_`
+  (`InvalidSignature: Parameter _session_id ... cannot start with '_'`).
+  Earlier WIP used `_session_id` as a "plumbing hint" — that convention
+  is incompatible with the MCP boundary.
+- **ADR-002 (`docs/adr/ADR-002-wake-intent-coupling.md`)** documents a
+  related post-mortem (wake-intent coupling) observed during v0.5
+  development on the `docs/adr-002-wake-intent` branch. That branch is
+  being landed separately; it has no code dependency on v0.5.
+
+### Tests
+- 30 new tests across `tests/test_migrations.py`, `tests/test_inbox_peek.py`,
+  `tests/test_session_id.py`, `tests/test_logging.py`.
+- Full suite: **142 passed**, ruff clean, mypy clean on `src/`.
+
 ## [0.4.4] - 2026-04-22
 
 **Major** — wake-up transport migrates from Telegram to local HTTP webhooks.

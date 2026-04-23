@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS messages (
     metadata TEXT,
     created_at TEXT NOT NULL,
     read_at TEXT,
+    sender_session_id TEXT,
     FOREIGN KEY (sender_id) REFERENCES agents(id),
     FOREIGN KEY (recipient_id) REFERENCES agents(id)
 );
