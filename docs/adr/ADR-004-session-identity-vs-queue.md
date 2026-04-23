@@ -1,8 +1,8 @@
 # ADR-004 — Session identity: ephemeral-sessions-with-cache vs persistent-session-with-queue
 
-- **Status:** Proposed — decision pending
+- **Status:** Accepted — 2026-04-23 (Option W de facto)
 - **Date:** 2026-04-23
-- **Context window:** during v0.5.0 post-mortem; blocks v0.6 implementation
+- **Context window:** during v0.5.0 post-mortem
 - **Authors:** VLBeauClaudeOpus (vlbeau-opus), Vincent Lefebvre
 
 ## 1. Context
@@ -203,39 +203,58 @@ For a decision, compare along three axes:
 | Delays v0.6 | No | ~1 week extra | ~2-3 weeks extra | N/A |
 | Honest to ADR-001 §2.1 risk #5 | No | Yes | Partial | No |
 
-## 5. Recommendation (subject to Vincent's decision)
+## 5. Decision (2026-04-23)
 
-**Recommend Option Z (hybrid), with Option Y as the default for new profiles and Option X as the migration starting point.**
+**Adopt Option W (do nothing beyond v0.5 primitives).**
 
-Reasoning:
+After detailed scoping of Option X (v0.6 = A′ gateway-side cache), Vincent arbitrated that the ~8 days of work — of which ~7 would land in `hermes-agent` upstream (not in this repo), requiring either an upstream PR of uncertain welcome or a maintained fork — is **disproportionate to the benefit it delivers**.
 
-- **The user's lived problem** (2026-04-23 Telegram session unaware of concurrent opus session) is a Q2 problem, not a Q1 problem. Option X alone would not have prevented that experience.
-- **Heterogeneity is real**: `vlbeau-main` (orchestrator) wants one continuous identity; a future `vlbeau-codereview-batch` might genuinely want N parallel sessions. Forcing one model is wrong.
-- **Z lets us ship incrementally**: v0.6 = Option X (cache, items 5-8 of ADR-001). v0.7 = Option Y path, opt-in via config. We do not commit to the full cost upfront.
-- **Both paths share the bridge-side primitives** already shipped in v0.5 — no wasted work.
+The benefit of Option X is Q1 only (no message theft). Q1 is a secondary user pain: the test of 2026-04-23 showed the fragmented sessions eventually converge (Qwen did reply to Opus in the end), and silent message archiving is rare in practice. The primary user pain is Q2 (one agent_id ≠ one conversation), and Q2 is **not fixable without changing the framework's core session model** — which Hermes does not want to change.
 
-If hybrid is too expensive and we must pick one:
+Paying a high maintenance cost for a partial fix of a secondary problem, while the primary problem remains, is a poor trade.
 
-- **Pick Y (persistent)** if Vincent's primary use case is "I talk to Qwen once, across channels, and it should remember". This is the direction that closes the conceptual gap, even if the refactor is real.
-- **Pick X (A′)** if batch-parallel workflows are imminent and a persistent-session model would block them. Accept that "illusion of identity" persists; document it prominently.
+### Rationale for rejecting each option
 
-## 6. Open questions for Vincent
+| Option | Why rejected |
+|---|---|
+| **X** (A′ cache) | 8 days of mostly-upstream work for Q1 only. Q2 untouched. Fork risk. |
+| **Y** (persistent session + queue) | Would fix both Q1 and Q2, but ~2 weeks of work forcing Hermes into a shape it does not natively support. High regression risk. Hermes is vertical by design. |
+| **Z** (hybrid opt-in) | Combines the costs of X and Y. Doubles the test matrix and maintenance surface. |
+| **W** (do nothing) | **Selected.** Accepts that `agent_id` ≠ conversation and documents the limit. |
 
-1. **Your daily experience of the bug** — on 2026-04-23 you wanted Qwen to know about "our" conversation across the Telegram-ping and the A2A-ping. That's a Q2 problem. Is it representative? Or is message theft (Q1) the thing that actually hurts?
+### Scenario 3 — bridge as inter-framework bus (future evolution)
 
-2. **Multi-channel routing** under Option Y — if `vlbeau-opus` is in persistent mode and you write on Telegram while another agent pings via A2A, should those become consecutive turns in one conversation (integrated context) or should they stay in separate logical threads inside the same session (two sub-conversations)? The former is simpler; the latter needs sub-thread identity.
+Noted for the record: should the need for persistent-identity agents become pressing, the correct direction is **not** to patch Hermes but to **run a framework that natively supports persistent identity** (OpenClaw, Letta) on the same A2A bus. `a2a-mcp-bridge` is already framework-agnostic (SQLite bus + MCP interface); nothing prevents an OpenClaw agent from registering under `vlbeau-cognitive-X` and coexisting with Hermes profiles under `vlbeau-qwen36` etc.
 
-3. **Blast radius of long sessions** — under Option Y, a session can live for weeks. Are we prepared to invest in context compression, memory rotation, and checkpoint/restore? Or do we cap sessions at a time budget and accept a controlled "new session" boundary (e.g. daily reset)?
+This is the **long-term** escape hatch. It does not require any v0.6 of the bridge; it requires choosing the right framework for the right profile.
 
-4. **Other VLBeau profiles as consumers** — if `vlbeau-qwen36` moves to persistent (Y), its peers sending `agent_send` to it expect one actor. Does `vlbeau-glm51` need to know it's now talking to a persistent Qwen vs an ephemeral one? (Lean: no, the bridge contract is unchanged from sender's view.)
+### What happens next
 
-5. **ADR-001 status** — if we adopt this ADR-004, ADR-001 becomes either "superseded by ADR-004" or "scoped to Q1 only, Q2 addressed separately". Lean: ADR-001 stays, scoped to Q1; ADR-004 layers on top for Q2.
+- **Issue #14 closed as "won't implement"** — see comment for full rationale.
+- **Issue #13 v0.6 roadmap remains valid** for the 3 operational gaps (crash-recovery, multi-gateway, hot-reload), which have value independent of the Q1/Q2 debate.
+- **v0.5 is the stable endpoint** for the concurrency work on this bridge. Future bridge releases focus on operational robustness, not session semantics.
+- **CHANGELOG update**: document that ADR-001 §2.1 risks #1-#7 remain present by design — downstream agents must treat `agent_id` as a profile identifier, not a conversation identifier.
 
-## 7. Next steps if accepted
+## 6. Open questions for Vincent — ANSWERED 2026-04-23
 
-- **v0.6** (bridge-side): implement ADR-001 items 5-8 (Option X cache + read API + handled markers). Issue #14 remains valid, rewrite its acceptance test to assert "no duplicate reply / no orphan handled marker" (not "1 session").
-- **v0.7** (Hermes-side): introduce `session_mode: persistent | ephemeral` in profile config. Implement the persistent path (queue format, trigger demux, origin routing). Opt-in per profile starting with `vlbeau-main`.
-- **v0.8** (validation): migrate 2-3 additional profiles to persistent, observe behaviour, iterate on compression / context-cap policies.
+1. **Your daily experience of the bug** — *Answered:* The lived pain is Q2 (fragmentation of identity), not Q1 (message theft). Q1 converges eventually in practice.
+
+2. **Multi-channel routing** under Option Y — *Moot:* Y not selected.
+
+3. **Blast radius of long sessions** — *Moot:* persistent sessions not pursued within Hermes. If needed, addressed by the framework (OpenClaw/Letta) rather than by extending Hermes.
+
+4. **Other VLBeau profiles as consumers** — *Moot under W:* `agent_id` semantics unchanged. Downstream agents continue to treat the bus as "send to a profile, not a conversation".
+
+5. **ADR-001 status** — ADR-001 stays Accepted in its original scope (Q1). The v0.5 primitives it motivated are shipped and useful. The gateway-side items 5-8 are **deferred indefinitely**. This ADR-004 clarifies that ADR-001 alone does not close the user-visible gap, and that closing it requires a framework change — not pursued here.
+
+## 7. Next steps
+
+Retained from the decision above:
+
+- Close issue #14 with pointer to this ADR.
+- Update CHANGELOG in the next bridge release to document the acceptance of ADR-001 §2.1 risks #1-#7 as permanent.
+- Issue #13 operational roadmap (v0.7) remains independent and valid.
+- No v0.6 session-semantics work. v0.5 is the stopping point.
 
 ## 8. References
 
