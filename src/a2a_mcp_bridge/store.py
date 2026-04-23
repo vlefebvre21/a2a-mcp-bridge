@@ -26,6 +26,53 @@ class Store:
 
     def init_schema(self) -> None:
         self._conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+        self._migrate_schema()
+
+    def _migrate_schema(self) -> None:
+        """Apply idempotent schema migrations to pre-existing databases.
+
+        Runs after :meth:`init_schema` so fresh DBs (which already include the
+        current columns via ``CREATE TABLE IF NOT EXISTS``) skip the ALTER
+        branches naturally. For pre-v0.5 DBs on disk we need to add columns
+        introduced later without dropping data.
+
+        Each migration step:
+          * wraps its work in ``BEGIN IMMEDIATE`` / ``COMMIT`` so a concurrent
+            writer (e.g. another Hermes profile spinning up) cannot interleave
+            between the ``PRAGMA table_info`` probe and the ``ALTER TABLE``;
+          * checks via ``PRAGMA table_info`` before attempting ``ALTER TABLE``,
+            because SQLite has no ``ADD COLUMN IF NOT EXISTS`` and a second
+            run would otherwise raise ``OperationalError``.
+
+        The migration table of contents (keep in sync with CHANGELOG):
+
+        * v0.5 — ``messages.sender_session_id TEXT NULL`` (A2A session
+          correlation, see ADR-001).
+        """
+        # v0.5 — messages.sender_session_id
+        existing_cols = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(messages)").fetchall()
+        }
+        if "sender_session_id" not in existing_cols:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                # Re-check inside the transaction in case a concurrent writer
+                # raced us between the probe above and here.
+                cols = {
+                    row["name"]
+                    for row in self._conn.execute(
+                        "PRAGMA table_info(messages)"
+                    ).fetchall()
+                }
+                if "sender_session_id" not in cols:
+                    self._conn.execute(
+                        "ALTER TABLE messages ADD COLUMN sender_session_id TEXT"
+                    )
+                self._conn.execute("COMMIT")
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
 
     def close(self) -> None:
         self._conn.close()
