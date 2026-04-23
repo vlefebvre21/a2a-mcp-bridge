@@ -3,7 +3,7 @@
 - **Status:** Accepted — 2026-04-23 (Option W de facto)
 - **Date:** 2026-04-23
 - **Context window:** during v0.5.0 post-mortem
-- **Authors:** VLBeauClaudeOpus (vlbeau-opus), Vincent Lefebvre
+- **Authors:** VLBeauClaudeOpus (vlbeau-opus), vlefebvre21
 
 ## 1. Context
 
@@ -77,7 +77,7 @@ Inverts the ownership:
 
 ### 3.3 Option Z — Hybrid: persistent session optional, opt-in per profile
 
-Some profiles benefit from Y (the orchestrator `vlbeau-main` — one continuous conversation with Vincent across channels). Others may not (a batch worker like `vlbeau-qwen36` doing 50 parallel code-review tasks).
+Some profiles benefit from Y (the orchestrator `vlbeau-main` — one continuous conversation with the user across channels). Others may not (a batch worker like `vlbeau-qwen36` doing 50 parallel code-review tasks).
 
 - Add `session_mode: persistent | ephemeral` in profile `config.yaml`.
 - `persistent` profiles run Option Y (one process, queue, persistent session).
@@ -207,7 +207,7 @@ For a decision, compare along three axes:
 
 **Adopt Option W (do nothing beyond v0.5 primitives).**
 
-After detailed scoping of Option X (v0.6 = A′ gateway-side cache), Vincent arbitrated that the ~8 days of work — of which ~7 would land in `hermes-agent` upstream (not in this repo), requiring either an upstream PR of uncertain welcome or a maintained fork — is **disproportionate to the benefit it delivers**.
+After detailed scoping of Option X (v0.6 = A′ gateway-side cache), the user arbitrated that the ~8 days of work — of which ~7 would land in `hermes-agent` upstream (not in this repo), requiring either an upstream PR of uncertain welcome or a maintained fork — is **disproportionate to the benefit it delivers**.
 
 The benefit of Option X is Q1 only (no message theft). Q1 is a secondary user pain: the test of 2026-04-23 showed the fragmented sessions eventually converge (Qwen did reply to Opus in the end), and silent message archiving is rare in practice. The primary user pain is Q2 (one agent_id ≠ one conversation), and Q2 is **not fixable without changing the framework's core session model** — which Hermes does not want to change.
 
@@ -235,7 +235,7 @@ This is the **long-term** escape hatch. It does not require any v0.6 of the brid
 - **v0.5 is the stable endpoint** for the concurrency work on this bridge. Future bridge releases focus on operational robustness, not session semantics.
 - **CHANGELOG update**: document that ADR-001 §2.1 risks #1-#7 remain present by design — downstream agents must treat `agent_id` as a profile identifier, not a conversation identifier.
 
-## 6. Open questions for Vincent — ANSWERED 2026-04-23
+## 6. Open questions for the user — ANSWERED 2026-04-23
 
 1. **Your daily experience of the bug** — *Answered:* The lived pain is Q2 (fragmentation of identity), not Q1 (message theft). Q1 converges eventually in practice.
 
