@@ -123,7 +123,7 @@ class A2AMcp(FastMCP):
     2. The spec encourages servers to declare every capability they *might*
        use; this keeps our handshake honest.
 
-    Note (documented caveat for Vincent's setup):
+    Note (documented caveat for the user's setup):
     This does **not** solve the "client keeps talking to an old stdio server
     after a version upgrade" issue. An upgraded binary only runs after the
     parent process (Hermes gateway) restarts its stdio child. Emitting

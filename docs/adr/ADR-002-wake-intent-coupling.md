@@ -3,7 +3,7 @@
 - **Status:** Proposed
 - **Date:** 2026-04-23
 - **Context window:** post v0.4.4
-- **Authors:** VLBeauClaudeOpus (architect), Vincent Lefebvre
+- **Authors:** VLBeauClaudeOpus (architect), vlefebvre21
 
 ## 1. Context
 
@@ -53,7 +53,7 @@ channel and are handled by the same code path.
 | 1 | **Task handoff dies as ack** | High | Implementer agent acks the task, never executes it. Discovered hours later by the requester. |
 | 2 | **Requester has no feedback loop** | High | The ack looks like progress. No "accepted but not started" signal, no timeout. |
 | 3 | **Silent scope reinterpretation** | Medium | Triage skill tends to condense messages into a reply — nuance and deliverables in the original brief get summarized away in the ack and lost. |
-| 4 | **Manual rescue required** | Medium | User (Vincent) had to notice the silence, check bus state, and re-prompt Qwen via Telegram the next morning. |
+| 4 | **Manual rescue required** | Medium | The user had to notice the silence, check bus state, and re-prompt Qwen via Telegram the next morning. |
 | 5 | **No way to express "do the thing" on the bus** | Medium | Any caller that wants an agent to *act* on a message, not just *respond* to it, has to reach out of band (Telegram, cron, direct MCP call). This defeats the point of A2A as a delegation mesh. |
 | 6 | **Cross-agent protocol ambiguity** | Low-Medium | Skill prompts across profiles diverge on how to handle "action-required" messages. Each agent has its own heuristic, none are guaranteed. |
 

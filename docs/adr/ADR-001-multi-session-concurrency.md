@@ -4,7 +4,7 @@
 - **Date:** 2026-04-22
 - **Last updated:** 2026-04-22 (decision revised from hybrid B+C to A′ after review)
 - **Context window:** post v0.4.4
-- **Authors:** VLBeauClaudeOpus (architect), Vincent Lefebvre
+- **Authors:** VLBeauClaudeOpus (architect), vlefebvre21
 
 ## 1. Context
 
@@ -298,7 +298,7 @@ we introduce multi-host profiles or conversation-pinned routing.
 ## 6. References
 
 - Discovery conversation: 2026-04-22 Telegram chat, VLBeauClaudeOpus ↔
-  Vincent, re "root cause #9: cross-session interleave".
+  the user, re "root cause #9: cross-session interleave".
 - Bridge v0.4.4 release notes (webhook wake-up mechanism that enabled
   the concurrency to become routine rather than accidental).
 - Related Hermes topic: skills and memory are per-profile but have no
