@@ -21,7 +21,7 @@ restarts and to correlate log lines across concurrent agent sessions.
   or when lagging behind the bus, but external tooling can also use it
   to inspect an agent's history without consuming pending messages.
 - **`messages.sender_session_id` column** — optional opaque correlator
-  (≤ 128 chars, nullable) stored alongside every inbound message. Payload
+  (≤ 128 bytes UTF-8, nullable) stored alongside every inbound message. Payload
   shapes of `agent_inbox`, `agent_inbox_peek`, and `agent_subscribe` now
   include `"sender_session_id"` for every message (always present, `null`
   when absent). Pre-v0.5 callers that ignore unknown keys are unaffected.
@@ -35,7 +35,7 @@ restarts and to correlate log lines across concurrent agent sessions.
   `metadata={"session_id": "..."}`, the value is stored in
   `messages.sender_session_id` and surfaced to the recipient's inbox
   payload. Non-string or oversize values are rejected with error codes
-  `SESSION_ID_INVALID` / `SESSION_ID_TOO_LARGE` (≤ 128 chars).
+  `SESSION_ID_INVALID` / `SESSION_ID_TOO_LARGE` (≤ 128 bytes UTF-8).
 - **`src/a2a_mcp_bridge/logging_ext.py`** — structured logging helper.
   Minimum schema: `{ts, level, event, agent_id}`; optional extras:
   `session_id, message_id, target, duration_ms, body_hash, error_code`.

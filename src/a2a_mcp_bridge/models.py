@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 AGENT_ID_PATTERN: re.Pattern[str] = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 MAX_BODY_BYTES: int = 64 * 1024
 MAX_METADATA_BYTES: int = 4 * 1024
-MAX_SESSION_ID_LEN: int = 128
+MAX_SESSION_ID_BYTES: int = 128
 
 
 class AgentId:

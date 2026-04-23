@@ -12,7 +12,7 @@ from typing import Any
 from .models import (
     MAX_BODY_BYTES,
     MAX_METADATA_BYTES,
-    MAX_SESSION_ID_LEN,
+    MAX_SESSION_ID_BYTES,
     AgentRecord,
     Message,
     SendResult,
@@ -147,9 +147,13 @@ class Store:
                     raise ValueError(
                         "SESSION_ID_INVALID: session_id must be a string"
                     )
-                if len(raw) > MAX_SESSION_ID_LEN:
+                # Enforce the limit in BYTES (UTF-8) to stay consistent with
+                # MAX_BODY_BYTES / MAX_METADATA_BYTES. Using len() in chars
+                # would silently let a 128-emoji session_id balloon to
+                # ~512 bytes in the DB — see GLM review nit #1 on PR #12.
+                if len(raw.encode("utf-8")) > MAX_SESSION_ID_BYTES:
                     raise ValueError(
-                        f"SESSION_ID_TOO_LARGE: session_id exceeds {MAX_SESSION_ID_LEN} chars"
+                        f"SESSION_ID_TOO_LARGE: session_id exceeds {MAX_SESSION_ID_BYTES} bytes"
                     )
                 session_id = raw
 

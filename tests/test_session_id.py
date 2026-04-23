@@ -3,8 +3,10 @@
 Contract:
   * ``agent_send`` recognises a ``session_id`` key inside the opaque
     ``metadata`` dict. No new tool parameter.
-  * The value must be a string ≤ 128 chars — otherwise the send is rejected
-    with ``SESSION_ID_INVALID`` or ``SESSION_ID_TOO_LARGE``.
+  * The value must be a string whose UTF-8 encoding is ≤ 128 bytes —
+    otherwise the send is rejected with ``SESSION_ID_INVALID`` or
+    ``SESSION_ID_TOO_LARGE``. The limit is enforced in BYTES (not chars)
+    so UTF-8 multi-byte characters (emoji, CJK) cannot sneak past.
   * On success, ``sender_session_id`` is stored in the dedicated SQLite
     column AND surfaced at the top level of the payload returned by
     ``agent_inbox`` / ``agent_inbox_peek``.
@@ -111,7 +113,7 @@ class TestSessionIdValidation:
 
     def test_rejects_too_long_session_id(self, store: Store) -> None:
         _register(store, "alice", "bob")
-        too_long = "a" * 129
+        too_long = "a" * 129  # 129 ASCII bytes
         result = tool_agent_send(
             store,
             "alice",
@@ -121,9 +123,29 @@ class TestSessionIdValidation:
         )
         assert result.get("error", {}).get("code") == "SESSION_ID_TOO_LARGE"
 
+    def test_rejects_utf8_that_exceeds_bytes_limit(self, store: Store) -> None:
+        """GLM review nit #1 regression guard.
+
+        The limit is enforced in BYTES (len(raw.encode("utf-8"))), not
+        characters. A string of 33 4-byte emoji is 33 chars but 132 bytes,
+        so it must be rejected even though len() = 33 ≤ 128.
+        """
+        _register(store, "alice", "bob")
+        emoji_33 = "🎯" * 33  # 33 chars, 132 bytes in UTF-8
+        assert len(emoji_33) == 33
+        assert len(emoji_33.encode("utf-8")) == 132
+        result = tool_agent_send(
+            store,
+            "alice",
+            target="bob",
+            message="x",
+            metadata={"session_id": emoji_33},
+        )
+        assert result.get("error", {}).get("code") == "SESSION_ID_TOO_LARGE"
+
     def test_accepts_exactly_max_length(self, store: Store) -> None:
         _register(store, "alice", "bob")
-        max_id = "a" * 128
+        max_id = "a" * 128  # 128 ASCII bytes = 128 bytes
         result = tool_agent_send(
             store,
             "alice",

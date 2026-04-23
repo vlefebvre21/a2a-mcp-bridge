@@ -187,7 +187,7 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
             target: recipient agent_id (lowercase, matches ^[a-z0-9][a-z0-9_-]{0,63}$).
             message: UTF-8 text body, max 65536 bytes.
             metadata: optional JSON-serialisable dict, max 4096 bytes serialised.
-                A reserved key ``session_id`` (string, ≤ 128 chars) is
+                A reserved key ``session_id`` (string, ≤ 128 bytes UTF-8) is
                 hoisted into a dedicated column and surfaced in the inbox
                 payload — see ADR-001 §4 #2.
 
