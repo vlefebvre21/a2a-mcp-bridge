@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
+from .logging_ext import hash_body, log_event
 from .signals import SignalDir
 from .store import Store
 from .wake import WebhookWaker
@@ -38,6 +40,13 @@ def tool_agent_send(
     Both hooks are best-effort: failures are logged but never propagated — the
     authoritative record is always the SQLite store.
     """
+    start = time.perf_counter()
+    session_id: str | None = None
+    if metadata is not None:
+        sid = metadata.get("session_id")
+        if isinstance(sid, str):
+            session_id = sid
+
     store.upsert_agent(caller_id)
     try:
         result = store.send_message(
@@ -48,7 +57,19 @@ def tool_agent_send(
         )
     except ValueError as e:
         code, _, msg = str(e).partition(":")
-        return {"error": {"code": code.strip() or "ERROR", "message": msg.strip() or str(e)}}
+        err_code = code.strip() or "ERROR"
+        log_event(
+            logger,
+            event="tool.agent_send",
+            agent_id=caller_id,
+            level=logging.WARNING,
+            session_id=session_id,
+            target=target,
+            body_hash=hash_body(message),
+            error_code=err_code,
+            duration_ms=round((time.perf_counter() - start) * 1000, 2),
+        )
+        return {"error": {"code": err_code, "message": msg.strip() or str(e)}}
 
     if signal_dir is not None:
         signal_dir.notify(target)
@@ -59,6 +80,16 @@ def tool_agent_send(
         except Exception as exc:  # pragma: no cover - waker must swallow, defensive
             logger.warning("waker raised for %s: %s", target, exc)
 
+    log_event(
+        logger,
+        event="tool.agent_send",
+        agent_id=caller_id,
+        session_id=session_id,
+        target=target,
+        message_id=result.message_id,
+        body_hash=hash_body(message),
+        duration_ms=round((time.perf_counter() - start) * 1000, 2),
+    )
     return {
         "message_id": result.message_id,
         "sent_at": result.sent_at.isoformat(),
@@ -71,9 +102,20 @@ def tool_agent_inbox(
     caller_id: str,
     limit: int = 10,
     unread_only: bool = True,
+    session_id: str | None = None,
 ) -> dict[str, Any]:
+    start = time.perf_counter()
     store.upsert_agent(caller_id)
     messages = store.read_inbox(caller_id, limit=limit, unread_only=unread_only)
+    log_event(
+        logger,
+        event="tool.agent_inbox",
+        agent_id=caller_id,
+        session_id=session_id,
+        unread_only=unread_only,
+        count=len(messages),
+        duration_ms=round((time.perf_counter() - start) * 1000, 2),
+    )
     return {"messages": [_serialize_message(m) for m in messages]}
 
 
@@ -82,6 +124,7 @@ def tool_agent_inbox_peek(
     caller_id: str,
     since_ts: str | None = None,
     limit: int = 50,
+    session_id: str | None = None,
 ) -> dict[str, Any]:
     """Read-only inbox view — no mark-as-read, no state mutation.
 
@@ -94,8 +137,18 @@ def tool_agent_inbox_peek(
     The response shape matches :func:`tool_agent_inbox` so callers that
     already handle the ``messages`` list can switch freely between the two.
     """
+    start = time.perf_counter()
     store.upsert_agent(caller_id)
     messages = store.peek_inbox(caller_id, since_ts=since_ts, limit=limit)
+    log_event(
+        logger,
+        event="tool.agent_inbox_peek",
+        agent_id=caller_id,
+        session_id=session_id,
+        since_ts=since_ts,
+        count=len(messages),
+        duration_ms=round((time.perf_counter() - start) * 1000, 2),
+    )
     return {"messages": [_serialize_message(m) for m in messages]}
 
 
@@ -103,9 +156,19 @@ def tool_agent_list(
     store: Store,
     caller_id: str,
     active_within_days: int = 7,
+    session_id: str | None = None,
 ) -> dict[str, Any]:
+    start = time.perf_counter()
     store.upsert_agent(caller_id)
     agents = store.list_agents(active_within_days=active_within_days)
+    log_event(
+        logger,
+        event="tool.agent_list",
+        agent_id=caller_id,
+        session_id=session_id,
+        count=len(agents),
+        duration_ms=round((time.perf_counter() - start) * 1000, 2),
+    )
     return {
         "agents": [
             {
@@ -127,6 +190,7 @@ def tool_agent_subscribe(
     timeout_seconds: float = 30.0,
     poll_interval: float = 0.2,
     limit: int = 10,
+    session_id: str | None = None,
 ) -> dict[str, Any]:
     """Long-poll the caller's inbox until a message arrives or timeout expires.
 
@@ -139,6 +203,7 @@ def tool_agent_subscribe(
     ``timed_out`` boolean indicating whether the wait hit its deadline with no
     signal.
     """
+    start = time.perf_counter()
     store.upsert_agent(caller_id)
 
     timeout = max(0.0, min(timeout_seconds, MAX_SUBSCRIBE_TIMEOUT_SECONDS))
@@ -146,6 +211,16 @@ def tool_agent_subscribe(
     # Fast path: messages already waiting → flush & return.
     existing = store.read_inbox(caller_id, limit=limit, unread_only=True)
     if existing:
+        log_event(
+            logger,
+            event="tool.agent_subscribe",
+            agent_id=caller_id,
+            session_id=session_id,
+            timed_out=False,
+            fast_path=True,
+            count=len(existing),
+            duration_ms=round((time.perf_counter() - start) * 1000, 2),
+        )
         return {
             "messages": [_serialize_message(m) for m in existing],
             "timed_out": False,
@@ -153,9 +228,28 @@ def tool_agent_subscribe(
 
     fired = signal_dir.wait(caller_id, timeout_seconds=timeout, poll_interval=poll_interval)
     if not fired:
+        log_event(
+            logger,
+            event="tool.agent_subscribe",
+            agent_id=caller_id,
+            session_id=session_id,
+            timed_out=True,
+            count=0,
+            duration_ms=round((time.perf_counter() - start) * 1000, 2),
+        )
         return {"messages": [], "timed_out": True}
 
     messages = store.read_inbox(caller_id, limit=limit, unread_only=True)
+    log_event(
+        logger,
+        event="tool.agent_subscribe",
+        agent_id=caller_id,
+        session_id=session_id,
+        timed_out=False,
+        fast_path=False,
+        count=len(messages),
+        duration_ms=round((time.perf_counter() - start) * 1000, 2),
+    )
     return {
         "messages": [_serialize_message(m) for m in messages],
         "timed_out": False,

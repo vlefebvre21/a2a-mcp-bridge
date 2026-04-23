@@ -20,7 +20,6 @@ import pytest
 
 from a2a_mcp_bridge.store import Store
 
-
 LEGACY_V04_SCHEMA = """
 CREATE TABLE IF NOT EXISTS agents (
     id TEXT PRIMARY KEY,

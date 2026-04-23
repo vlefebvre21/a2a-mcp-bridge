@@ -193,17 +193,37 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
         return tool_agent_send(store, agent_id, target, message, metadata, signal_dir, waker)
 
     @mcp.tool()
-    def agent_inbox(limit: int = 10, unread_only: bool = True) -> dict[str, Any]:
+    def agent_inbox(
+        limit: int = 10,
+        unread_only: bool = True,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
         """Read messages addressed to the calling agent.
 
         When unread_only=True (default), returned messages are atomically marked read.
+
+        Args:
+            limit: max messages to return.
+            unread_only: if True (default), atomically mark the returned
+                messages as read.
+            session_id: optional opaque session correlator used by the
+                caller (e.g. the Hermes gateway) to tag its own log lines.
+                Plumbing metadata — not interpreted beyond log tagging.
+                See ADR-001 §4 #3.
         """
-        return tool_agent_inbox(store, agent_id, limit=limit, unread_only=unread_only)
+        return tool_agent_inbox(
+            store,
+            agent_id,
+            limit=limit,
+            unread_only=unread_only,
+            session_id=session_id,
+        )
 
     @mcp.tool()
     def agent_inbox_peek(
         since_ts: str | None = None,
         limit: int = 50,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
         """Read-only view of the caller's inbox — no mark-as-read.
 
@@ -218,6 +238,8 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
                 arrival time (replay order). When omitted, returns the
                 ``limit`` most recent messages sorted newest-first.
             limit: max number of messages to return (clamped to [1, 200]).
+            session_id: optional opaque session correlator for log tagging
+                (ADR-001 §4 #3).
 
         Returns:
             ``{"messages": [...]}`` with the same payload shape as
@@ -227,17 +249,39 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
         See ADR-001 §4 for the concurrency rationale (bridge-side primitive
         introduced in v0.5).
         """
-        return tool_agent_inbox_peek(store, agent_id, since_ts=since_ts, limit=limit)
+        return tool_agent_inbox_peek(
+            store,
+            agent_id,
+            since_ts=since_ts,
+            limit=limit,
+            session_id=session_id,
+        )
 
     @mcp.tool()
-    def agent_list(active_within_days: int = 7) -> dict[str, Any]:
-        """List agents seen on the bus in the given window (default 7 days)."""
-        return tool_agent_list(store, agent_id, active_within_days=active_within_days)
+    def agent_list(
+        active_within_days: int = 7,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        """List agents seen on the bus in the given window (default 7 days).
+
+        Args:
+            active_within_days: only return agents whose ``last_seen_at``
+                is within this many days of now.
+            session_id: optional opaque session correlator for log tagging
+                (ADR-001 §4 #3).
+        """
+        return tool_agent_list(
+            store,
+            agent_id,
+            active_within_days=active_within_days,
+            session_id=session_id,
+        )
 
     @mcp.tool()
     def agent_subscribe(
         timeout_seconds: float = 30.0,
         limit: int = 10,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
         """Long-poll for new messages (v0.2 real-time delivery).
 
@@ -245,6 +289,12 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
         for a new message to arrive for the calling agent. Returns immediately
         if messages are already pending. Payload shape matches ``agent_inbox``
         plus a ``timed_out`` boolean.
+
+        Args:
+            timeout_seconds: max seconds to block (capped at 55 s).
+            limit: max messages to return when the wait resolves.
+            session_id: optional opaque session correlator for log tagging
+                (ADR-001 §4 #3).
 
         Usage pattern for a continuously-listening agent::
 
@@ -259,6 +309,7 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
             signal_dir=signal_dir,
             timeout_seconds=timeout_seconds,
             limit=limit,
+            session_id=session_id,
         )
 
     @mcp.tool()
