@@ -1,0 +1,34 @@
+# gitleaks config — https://github.com/gitleaks/gitleaks
+#
+# Inherits all default rules (OpenAI, Anthropic, GitHub PATs, AWS, Google,
+# Slack, etc.) and adds project-specific allowlist entries for known
+# false positives.
+
+[extend]
+# Use the built-in default ruleset as the base.
+useDefault = true
+
+[allowlist]
+description = "Allowlist for known false positives in this repo"
+paths = [
+    # Test fixtures that contain synthetic secrets for testing the
+    # wake-up HMAC signing path. Not real credentials.
+    '''tests/test_wake\.py''',
+]
+
+# Specific synthetic values that look token-like but are test fixtures.
+regexes = [
+    # "abcd1234" repeated 8 times = synthetic 64-char "secret" used in
+    # tests/test_wake.py to exercise the HMAC signing path.
+    '''abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234''',
+    # Named-prefix fake secret used in wake tests.
+    '''test-secret-for-hmac-signing-[a-z0-9x]+''',
+]
+
+# Commit-level allowlist: if a commit was intentionally merged despite
+# containing a string that looks token-like (e.g. a reference to a leaked
+# key in an ADR that documents the leak itself), add its SHA here with
+# an inline comment.
+commits = [
+    # (none yet)
+]
