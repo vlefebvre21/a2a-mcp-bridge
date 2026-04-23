@@ -212,3 +212,70 @@ class Store:
             )
             for r in rows
         ]
+
+    def peek_inbox(
+        self,
+        agent_id: str,
+        since_ts: str | None = None,
+        limit: int = 50,
+    ) -> list[Message]:
+        """Read-only view of the caller's inbox.
+
+        Returns messages addressed to ``agent_id`` without any mark-as-read
+        side-effect. The tuple ``(read_at, read status)`` of every row is left
+        untouched — this is the crucial property that distinguishes
+        :meth:`peek_inbox` from :meth:`read_inbox`.
+
+        Semantics:
+          * ``since_ts`` is an ISO-8601 UTC timestamp string. When provided,
+            only messages with ``created_at >= since_ts`` are returned, sorted
+            **ASC** by ``created_at`` — the replay-in-order use case (gateway
+            cache recovery).
+          * When ``since_ts`` is ``None``, returns the ``limit`` most recent
+            messages sorted by ``created_at DESC``. This gives the "show me
+            my latest inbox without consuming it" use case without forcing
+            the caller to derive a timestamp.
+          * Already-read messages ARE included, with their ``read_at``
+            populated so the caller can tell who consumed them and when.
+
+        The limit is clamped to ``[1, 200]`` to protect the caller from
+        accidentally loading the entire history into a single payload.
+
+        See ADR-001 §4 (bridge-side primitive #1) for the rationale.
+        """
+        limit = max(1, min(limit, 200))
+        if since_ts is None:
+            rows = self._conn.execute(
+                """
+                SELECT id, sender_id, recipient_id, body, metadata, created_at, read_at
+                FROM messages
+                WHERE recipient_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (agent_id, limit),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                """
+                SELECT id, sender_id, recipient_id, body, metadata, created_at, read_at
+                FROM messages
+                WHERE recipient_id = ? AND created_at >= ?
+                ORDER BY created_at ASC
+                LIMIT ?
+                """,
+                (agent_id, since_ts, limit),
+            ).fetchall()
+
+        return [
+            Message(
+                id=r["id"],
+                sender_id=r["sender_id"],
+                recipient_id=r["recipient_id"],
+                body=r["body"],
+                metadata=json.loads(r["metadata"]) if r["metadata"] else None,
+                created_at=datetime.fromisoformat(r["created_at"]),
+                read_at=datetime.fromisoformat(r["read_at"]) if r["read_at"] else None,
+            )
+            for r in rows
+        ]

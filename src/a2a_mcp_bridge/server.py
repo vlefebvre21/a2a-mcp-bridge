@@ -20,6 +20,7 @@ from .signals import SignalDir
 from .store import Store
 from .tools import (
     tool_agent_inbox,
+    tool_agent_inbox_peek,
     tool_agent_list,
     tool_agent_send,
     tool_agent_subscribe,
@@ -198,6 +199,35 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
         When unread_only=True (default), returned messages are atomically marked read.
         """
         return tool_agent_inbox(store, agent_id, limit=limit, unread_only=unread_only)
+
+    @mcp.tool()
+    def agent_inbox_peek(
+        since_ts: str | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """Read-only view of the caller's inbox — no mark-as-read.
+
+        Unlike ``agent_inbox``, this tool never mutates ``read_at``. Use it
+        when you want to inspect what's waiting (or what has been delivered)
+        without consuming it — e.g. a gateway reconstructing its local cache
+        after a restart, or tooling that wants a global view.
+
+        Args:
+            since_ts: ISO-8601 UTC timestamp. When provided, only messages
+                with ``created_at >= since_ts`` are returned, sorted ASC by
+                arrival time (replay order). When omitted, returns the
+                ``limit`` most recent messages sorted newest-first.
+            limit: max number of messages to return (clamped to [1, 200]).
+
+        Returns:
+            ``{"messages": [...]}`` with the same payload shape as
+            ``agent_inbox``. Already-read messages are included with their
+            ``read_at`` populated.
+
+        See ADR-001 §4 for the concurrency rationale (bridge-side primitive
+        introduced in v0.5).
+        """
+        return tool_agent_inbox_peek(store, agent_id, since_ts=since_ts, limit=limit)
 
     @mcp.tool()
     def agent_list(active_within_days: int = 7) -> dict[str, Any]:

@@ -89,6 +89,40 @@ def tool_agent_inbox(
     }
 
 
+def tool_agent_inbox_peek(
+    store: Store,
+    caller_id: str,
+    since_ts: str | None = None,
+    limit: int = 50,
+) -> dict[str, Any]:
+    """Read-only inbox view — no mark-as-read, no state mutation.
+
+    Thin adapter over :meth:`Store.peek_inbox`; see that method's docstring
+    for semantics. This is the v0.5 primitive added for ADR-001 (Option A′):
+    the Hermes gateway uses it to recover its inbox cache after a restart or
+    when the cache is lagging behind the bus, and external tooling uses it
+    to inspect an agent's history without consuming messages.
+
+    The response shape matches :func:`tool_agent_inbox` so callers that
+    already handle the ``messages`` list can switch freely between the two.
+    """
+    store.upsert_agent(caller_id)
+    messages = store.peek_inbox(caller_id, since_ts=since_ts, limit=limit)
+    return {
+        "messages": [
+            {
+                "message_id": m.id,
+                "sender": m.sender_id,
+                "body": m.body,
+                "metadata": m.metadata,
+                "sent_at": m.created_at.isoformat(),
+                "read_at": m.read_at.isoformat() if m.read_at else None,
+            }
+            for m in messages
+        ]
+    }
+
+
 def tool_agent_list(
     store: Store,
     caller_id: str,
