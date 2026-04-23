@@ -129,7 +129,7 @@ def tool_agent_inbox_peek(
     """Read-only inbox view — no mark-as-read, no state mutation.
 
     Thin adapter over :meth:`Store.peek_inbox`; see that method's docstring
-    for semantics. This is the v0.5 primitive added for ADR-001 (Option A′):
+    for semantics. This is the v0.5 primitive added for ADR-001 (Option A'):
     the Hermes gateway uses it to recover its inbox cache after a restart or
     when the cache is lagging behind the bus, and external tooling uses it
     to inspect an agent's history without consuming messages.
