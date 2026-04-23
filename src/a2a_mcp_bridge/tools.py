@@ -74,19 +74,7 @@ def tool_agent_inbox(
 ) -> dict[str, Any]:
     store.upsert_agent(caller_id)
     messages = store.read_inbox(caller_id, limit=limit, unread_only=unread_only)
-    return {
-        "messages": [
-            {
-                "message_id": m.id,
-                "sender": m.sender_id,
-                "body": m.body,
-                "metadata": m.metadata,
-                "sent_at": m.created_at.isoformat(),
-                "read_at": m.read_at.isoformat() if m.read_at else None,
-            }
-            for m in messages
-        ]
-    }
+    return {"messages": [_serialize_message(m) for m in messages]}
 
 
 def tool_agent_inbox_peek(
@@ -108,19 +96,7 @@ def tool_agent_inbox_peek(
     """
     store.upsert_agent(caller_id)
     messages = store.peek_inbox(caller_id, since_ts=since_ts, limit=limit)
-    return {
-        "messages": [
-            {
-                "message_id": m.id,
-                "sender": m.sender_id,
-                "body": m.body,
-                "metadata": m.metadata,
-                "sent_at": m.created_at.isoformat(),
-                "read_at": m.read_at.isoformat() if m.read_at else None,
-            }
-            for m in messages
-        ]
-    }
+    return {"messages": [_serialize_message(m) for m in messages]}
 
 
 def tool_agent_list(
@@ -194,4 +170,5 @@ def _serialize_message(m: Any) -> dict[str, Any]:
         "metadata": m.metadata,
         "sent_at": m.created_at.isoformat(),
         "read_at": m.read_at.isoformat() if m.read_at else None,
+        "sender_session_id": m.sender_session_id,
     }

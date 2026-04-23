@@ -9,7 +9,14 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from .models import MAX_BODY_BYTES, MAX_METADATA_BYTES, AgentRecord, Message, SendResult
+from .models import (
+    MAX_BODY_BYTES,
+    MAX_METADATA_BYTES,
+    MAX_SESSION_ID_LEN,
+    AgentRecord,
+    Message,
+    SendResult,
+)
 
 SCHEMA_PATH: Path = Path(__file__).parent / "schema.sql"
 
@@ -125,6 +132,27 @@ class Store:
             raise ValueError("TARGET_SELF: cannot send to self")
         if len(body.encode("utf-8")) > MAX_BODY_BYTES:
             raise ValueError(f"MESSAGE_TOO_LARGE: body exceeds {MAX_BODY_BYTES} bytes")
+
+        # Extract and validate the optional session_id convention (ADR-001 §4 #2).
+        # The session_id travels inside the caller-supplied ``metadata`` dict so
+        # that no new tool parameter is added to ``agent_send``; the bridge
+        # simply recognises a well-known key, validates it, hoists it into a
+        # dedicated column for query-ability, and leaves the rest of the dict
+        # untouched for opaque forwarding.
+        session_id: str | None = None
+        if metadata is not None and "session_id" in metadata:
+            raw = metadata["session_id"]
+            if raw is not None:
+                if not isinstance(raw, str):
+                    raise ValueError(
+                        "SESSION_ID_INVALID: session_id must be a string"
+                    )
+                if len(raw) > MAX_SESSION_ID_LEN:
+                    raise ValueError(
+                        f"SESSION_ID_TOO_LARGE: session_id exceeds {MAX_SESSION_ID_LEN} chars"
+                    )
+                session_id = raw
+
         metadata_json: str | None = None
         if metadata is not None:
             metadata_json = json.dumps(metadata, separators=(",", ":"))
@@ -139,10 +167,10 @@ class Store:
         now = datetime.now(UTC)
         self._conn.execute(
             """
-            INSERT INTO messages (id, sender_id, recipient_id, body, metadata, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO messages (id, sender_id, recipient_id, body, metadata, created_at, sender_session_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (message_id, sender, recipient, body, metadata_json, now.isoformat()),
+            (message_id, sender, recipient, body, metadata_json, now.isoformat(), session_id),
         )
         return SendResult(message_id=message_id, sent_at=now, recipient=recipient)
 
@@ -159,7 +187,7 @@ class Store:
             try:
                 rows = self._conn.execute(
                     """
-                    SELECT id, sender_id, recipient_id, body, metadata, created_at, read_at
+                    SELECT id, sender_id, recipient_id, body, metadata, created_at, read_at, sender_session_id
                     FROM messages
                     WHERE recipient_id = ? AND read_at IS NULL
                     ORDER BY created_at ASC
@@ -177,7 +205,7 @@ class Store:
                     # Re-read to include read_at values in returned objects
                     rows = self._conn.execute(
                         f"""
-                        SELECT id, sender_id, recipient_id, body, metadata, created_at, read_at
+                        SELECT id, sender_id, recipient_id, body, metadata, created_at, read_at, sender_session_id
                         FROM messages
                         WHERE id IN ({placeholders})
                         ORDER BY created_at ASC
@@ -191,7 +219,7 @@ class Store:
         else:
             rows = self._conn.execute(
                 """
-                SELECT id, sender_id, recipient_id, body, metadata, created_at, read_at
+                SELECT id, sender_id, recipient_id, body, metadata, created_at, read_at, sender_session_id
                 FROM messages
                 WHERE recipient_id = ?
                 ORDER BY created_at DESC
@@ -209,6 +237,7 @@ class Store:
                 metadata=json.loads(r["metadata"]) if r["metadata"] else None,
                 created_at=datetime.fromisoformat(r["created_at"]),
                 read_at=datetime.fromisoformat(r["read_at"]) if r["read_at"] else None,
+                sender_session_id=r["sender_session_id"],
             )
             for r in rows
         ]
@@ -247,7 +276,7 @@ class Store:
         if since_ts is None:
             rows = self._conn.execute(
                 """
-                SELECT id, sender_id, recipient_id, body, metadata, created_at, read_at
+                SELECT id, sender_id, recipient_id, body, metadata, created_at, read_at, sender_session_id
                 FROM messages
                 WHERE recipient_id = ?
                 ORDER BY created_at DESC
@@ -258,7 +287,7 @@ class Store:
         else:
             rows = self._conn.execute(
                 """
-                SELECT id, sender_id, recipient_id, body, metadata, created_at, read_at
+                SELECT id, sender_id, recipient_id, body, metadata, created_at, read_at, sender_session_id
                 FROM messages
                 WHERE recipient_id = ? AND created_at >= ?
                 ORDER BY created_at ASC
@@ -276,6 +305,7 @@ class Store:
                 metadata=json.loads(r["metadata"]) if r["metadata"] else None,
                 created_at=datetime.fromisoformat(r["created_at"]),
                 read_at=datetime.fromisoformat(r["read_at"]) if r["read_at"] else None,
+                sender_session_id=r["sender_session_id"],
             )
             for r in rows
         ]
