@@ -3,7 +3,7 @@
 - **Status:** Accepted (reviewed 2026-04-23 by VLBeauClaudeOpus — LGTM + 3 nits inlined + 3 open questions resolved)
 - **Date:** 2026-04-23
 - **Context window:** post v0.4.4, parallel to v0.5-bridge-primitives branch
-- **Authors:** VLBeauQwen36 (drafter), VLBeauClaudeOpus (reviewer), Vincent Lefebvre
+- **Authors:** VLBeauQwen36 (drafter), VLBeauClaudeOpus (reviewer), vlefebvre21
 
 ## 1. Context
 
@@ -36,11 +36,11 @@ Compounding both issues, the shared working tree has a single
 `user.name` / `user.email` in `.git/config`:
 
 ```
-user.name=Vincent Lefebvre
-user.email=vlefebvre21@protonmail.com
+user.name=the user
+user.email=usermail@gmail.com
 ```
 
-All commits made by any agent (or by Vincent in person) land under the
+All commits made by any agent (or by the user in person) land under the
 same authorship. `git log --format='%an'` cannot distinguish agents, and
 `git reflog` cannot identify the author of a pointer mutation. Attribution
 today requires a cross-reference across three independent channels:
@@ -59,7 +59,7 @@ Two coupled problems to solve:
 
 - **P2 — Attribution.** Make `git log --format='%an %h %s'`
   self-sufficient for answering "which agent made this commit?" without
-  requiring A2A cross-reference. Additionally, make "Vincent committed
+  requiring A2A cross-reference. Additionally, make "the user committed
   this himself" visually distinct from "an agent committed this".
 
 Both problems already have workarounds (A2A diagnostic pings for P1;
@@ -112,7 +112,7 @@ Proposed identity mapping:
 | `vlbeau-qwen36`    | `VLBeauQwen`   | `qwen@vlbeau.local`     |
 | `vlbeau-glm51`     | `VLBeauGLM51`  | `glm51@vlbeau.local`    |
 | `vlbeau-deepseek`  | `VLBeauDeepSeek` | `deepseek@vlbeau.local` |
-| main checkout (Vincent) | `Vincent Lefebvre` | `vlefebvre21@protonmail.com` (unchanged) |
+| main checkout (the user) | `the user` | `usermail@gmail.com` |
 
 Each worktree has its own `HEAD`, `index`, and working copy. Branch
 pointers in `.git/refs/heads/` are shared across worktrees, but a
@@ -125,7 +125,7 @@ in worktree A does not affect the HEAD of worktree B.
   agents explicitly `git branch -f` the same ref. Everyday
   `checkout`/`rebase`/`reset` operations are isolated.
 - Solves P2: `git log --format='%an %h %s'` directly identifies the
-  agent. Commits by Vincent himself remain under his real identity, so
+  agent. Commits by the user himself remain under his real identity, so
   "agent vs human" attribution is also free.
 - No new tooling: `git worktree` is a standard git feature since 2.5.
 - WIP absorption race is largely eliminated — each agent sees its own
@@ -184,7 +184,7 @@ Rationale:
   boundary is the *profile*, not the *session*.
 - The CLA caveat is acceptable because VLBeau internal tooling is not
   upstreamed under these synthetic identities. If a patch needs to go
-  upstream, Vincent re-commits it from the main checkout under his own
+  upstream, the user re-commits it from the main checkout under his own
   identity, which is already the status quo.
 
 ## 5. Consequences
@@ -204,12 +204,12 @@ profile name and:
 ### 5.2 Agent memory
 
 Each agent's memory should record its **own** worktree path once, so
-that subsequent `cd /path` commands are correct without asking Vincent.
+that subsequent `cd /path` commands are correct without asking the user.
 Proposed memory entry:
 
 > `a2a-mcp-bridge worktree: /home/vince/projects/a2a-mcp-bridge-<profile>,
 > identity VLBeau<Profile> <<profile>@vlbeau.local>. NEVER operate on the
-> main checkout (/home/vince/projects/a2a-mcp-bridge) — that's Vincent's.`
+> main checkout (/home/vince/projects/a2a-mcp-bridge) — that's the user's.`
 
 ### 5.3 Shared-tree residual risk
 
@@ -233,13 +233,13 @@ Two residual cases remain even after Option 2:
   mutations only.
 - `github-pr-workflow` and `github-code-review`: ensure commit-signing
   and PR-authorship instructions reference the per-profile identity,
-  not `vlefebvre21@protonmail.com`.
+  not `usermail@gmail.com`.
 
 ### 5.5 CI / remote implications
 
 - GitHub and other remotes will display commits under
   `VLBeau<Profile>` with a fake `@vlbeau.local` email. For private
-  repos this is cosmetic; for public repos, squash-merge via Vincent's
+  repos this is cosmetic; for public repos, squash-merge via the user's
   main checkout re-attributes the final commit.
 - **Caveat on `@vlbeau.local`** — `.local` is reserved by RFC 6762
   (mDNS) for link-local name resolution. The address is intentionally
@@ -294,7 +294,7 @@ All three open questions from the draft have been resolved during the
    adopts the same pattern.
 
 3. **`vlbeau-main` profile handling** — the profile keeps its name;
-   its synthetic identity is `VLBeauOpus <opus@vlbeau.local>`. Vincent
+   its synthetic identity is `VLBeauOpus <opus@vlbeau.local>`. The user
    commits as himself from a shell **outside** Hermes (the main checkout
    retains his real `user.name`/`user.email`). This matches current
    practice and avoids renaming a widely-referenced profile.
