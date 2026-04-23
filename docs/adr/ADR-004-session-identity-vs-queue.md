@@ -119,6 +119,7 @@ Strategies considered (ordered by simplicity):
 - Passive sweep (triggered on inbox reads, no background thread required): any session with `heartbeat < now() - 1h` → `status = 'expired'`, unconsumed messages fall back to the global inbox (`read_at` stays NULL, they become deliverable to the next consumer).
 - **Pro:** no active monitoring, no bridge-side thread, no new cron.
 - **Con:** a flapping `read_at` can cause a message to be redistributed after expiration. Acceptable if agents assume idempotence on their handlers (already required by §9 of `a2a-inbox-triage`: "verify before apologizing").
+- **Bounded sweep:** each passive sweep expires at most `N` sessions per inbox read (recommended `N=100`, ordered by `last_heartbeat_at ASC`), keeping the read operation O(1) amortized regardless of fleet-wide session accumulation. If sustained accumulation is observed in production (sweep saturating the 100-cap on every read), a separate low-frequency cron (e.g. hourly) handles the long tail without blocking the hot path.
 
 **2. LRU cap per `agent_id` — refinement if respawn-races observed.**
 - Soft cap: 1 persistent session per profile (nominal case).
