@@ -1,6 +1,6 @@
 # ADR-003 — Per-profile git worktrees and distinct git identities for Hermes agents
 
-- **Status:** Proposed
+- **Status:** Accepted (reviewed 2026-04-23 by VLBeauClaudeOpus — LGTM + 3 nits inlined + 3 open questions resolved)
 - **Date:** 2026-04-23
 - **Context window:** post v0.4.4, parallel to v0.5-bridge-primitives branch
 - **Authors:** VLBeauQwen36 (drafter), VLBeauClaudeOpus (reviewer), Vincent Lefebvre
@@ -241,6 +241,14 @@ Two residual cases remain even after Option 2:
   `VLBeau<Profile>` with a fake `@vlbeau.local` email. For private
   repos this is cosmetic; for public repos, squash-merge via Vincent's
   main checkout re-attributes the final commit.
+- **Caveat on `@vlbeau.local`** — `.local` is reserved by RFC 6762
+  (mDNS) for link-local name resolution. The address is intentionally
+  non-routable and will never deliver mail, which is the desired
+  property. Some tooling (commitlint, husky `commit-msg` hooks, overly
+  strict CI email validators) may flag `@vlbeau.local` as malformed.
+  Mitigation: document the convention in contribution guides; if a
+  downstream consumer rejects it, fall back to `<profile>@vlbeau.example`
+  per RFC 2606 or a user-owned domain the operator controls.
 - No GPG signing required for the synthetic identities; if signing is
   later enforced, each profile gets its own GPG key.
 
@@ -252,25 +260,44 @@ Two residual cases remain even after Option 2:
 - No rewrite of historical commits. Past attribution remains
   triangulation-based; ADR-003 improves the future, not the past.
 
-## 6. Open questions
+### 5.7 Shared `.git/hooks` residual risk
 
-1. **Should the main checkout stay at `/home/vince/projects/a2a-mcp-bridge`
-   or move to `/home/vince/projects/a2a-mcp-bridge-main`?**
-   Staying preserves all existing scripts, cron jobs, and tmux panes.
-   Recommended: stay.
+Per-profile worktrees share the same `.git/hooks/` directory (hooks are
+repo-level, not worktree-level). Consequences:
 
-2. **Should the `scripts/bootstrap-agent-worktree.sh` be committed to
-   this repo or live in Hermes itself?**
-   If committed here, it couples bridge development to Hermes identity
-   policy. If in Hermes, it has to know per-repo conventions. Recommended:
-   committed here with a note that it applies to this repo only.
+- Any hook installed by one profile (pre-commit, commit-msg, pre-push)
+  runs for **every** profile committing in any worktree. A hook that
+  assumes a specific identity, shells out to a profile-specific script,
+  or rewrites commit messages can break other agents' commits silently.
+- Hook installation (via `pre-commit install`, `husky install`, or
+  manual scripts) must be coordinated via A2A before being enabled:
+  ping the active agents, agree on the hook set, install once from the
+  main checkout, document in `CONTRIBUTING.md`.
+- If per-profile hook behaviour is ever needed, `core.hooksPath` can be
+  set per-worktree via `git config --worktree core.hooksPath` — deferred
+  until a concrete need arises.
 
-3. **How do we handle the `vlbeau-main` profile, which is also Opus's
-   profile and runs on the same host?**
-   If Vincent ever commits from a session where `$HERMES_PROFILE=vlbeau-main`,
-   the commit lands as `VLBeauOpus`. Acceptable because that profile is
-   already agent-primary; if Vincent needs to commit as himself he uses a
-   shell outside of Hermes (the main checkout keeps his real identity).
+## 6. Resolved questions
+
+All three open questions from the draft have been resolved during the
+2026-04-23 review with VLBeauClaudeOpus:
+
+1. **Main checkout location** — stays at
+   `/home/vince/projects/a2a-mcp-bridge`. Moving it would break existing
+   scripts, cron jobs, and tmux panes for no real benefit. Per-profile
+   worktrees go alongside as `/home/vince/projects/a2a-mcp-bridge-<profile>`.
+
+2. **`bootstrap-agent-worktree.sh` location** — committed to this repo
+   under `scripts/`. Keeps the script versioned with the policy it
+   implements; a short note at the top states it applies to this repo
+   only. Hermes-level generalisation is deferred until a second repo
+   adopts the same pattern.
+
+3. **`vlbeau-main` profile handling** — the profile keeps its name;
+   its synthetic identity is `VLBeauOpus <opus@vlbeau.local>`. Vincent
+   commits as himself from a shell **outside** Hermes (the main checkout
+   retains his real `user.name`/`user.email`). This matches current
+   practice and avoids renaming a widely-referenced profile.
 
 ## 7. Related ADRs and skills
 
