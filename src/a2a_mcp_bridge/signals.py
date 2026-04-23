@@ -51,6 +51,25 @@ class SignalDir:
         except OSError as exc:  # pragma: no cover - defensive
             logger.warning("failed to write signal file %s: %s", target, exc)
 
+    def clear(self, agent_id: str) -> None:
+        """Remove the signal file for ``agent_id`` if it exists.
+
+        Called by ``tool_agent_inbox`` after a consuming read (``unread_only=True``
+        with at least one message returned) so that the next ``agent_subscribe``
+        does NOT fast-path on a stale signal whose unread messages have just been
+        drained. See the v0.5.1 signal-cleanup bugfix rationale: without this the
+        subscribe loop returns immediately with an empty ``messages=[]`` and
+        ``timed_out=False``, breaking wake-up semantics.
+
+        Best-effort — a concurrent reader in the same profile (post-v0.5
+        multi-session) may race us to remove. ``FileNotFoundError`` is suppressed
+        explicitly; other ``OSError`` kinds are suppressed defensively as well
+        because a signal failure must never block the canonical inbox read.
+        """
+        target = signal_path_for(self.path, agent_id)
+        with contextlib.suppress(FileNotFoundError, OSError):
+            os.remove(target)
+
     def wait(
         self,
         agent_id: str,

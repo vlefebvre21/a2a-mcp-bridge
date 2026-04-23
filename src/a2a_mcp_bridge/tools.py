@@ -103,10 +103,23 @@ def tool_agent_inbox(
     limit: int = 10,
     unread_only: bool = True,
     session_id: str | None = None,
+    signal_dir: SignalDir | None = None,
 ) -> dict[str, Any]:
     start = time.perf_counter()
     store.upsert_agent(caller_id)
     messages = store.read_inbox(caller_id, limit=limit, unread_only=unread_only)
+    # v0.5.1 — clear the signal file after a consuming read so a subsequent
+    # ``agent_subscribe`` does not fast-path on a stale signal whose unread
+    # messages have just been drained. We only clear when:
+    #   * a ``signal_dir`` is wired (omitted in unit tests with no real fs)
+    #   * the read was consuming (``unread_only=True`` — mark-as-read happened)
+    #   * at least one message was returned (nothing to drain otherwise; also
+    #     avoids masking a future send's signal that arrived between the store
+    #     read and this point — see docstring of ``SignalDir.clear``).
+    # ``peek_inbox`` (``tool_agent_inbox_peek``) NEVER clears the signal because
+    # it does not mutate ``read_at``.
+    if signal_dir is not None and unread_only and messages:
+        signal_dir.clear(caller_id)
     log_event(
         logger,
         event="tool.agent_inbox",

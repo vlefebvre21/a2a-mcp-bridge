@@ -11,6 +11,7 @@ import pytest
 from a2a_mcp_bridge.signals import SignalDir, signal_path_for
 from a2a_mcp_bridge.store import Store
 from a2a_mcp_bridge.tools import (
+    tool_agent_inbox,
     tool_agent_send,
     tool_agent_subscribe,
 )
@@ -177,3 +178,131 @@ class TestAgentSubscribe:
         )
         assert (time.monotonic() - start) < 1.0
         assert result["timed_out"] is True
+
+
+class TestSignalCleanupV051:
+    """v0.5.1 bugfix — ``tool_agent_inbox`` must drop the signal after a consuming
+    read so the next ``agent_subscribe`` does not fast-path on a stale signal.
+    """
+
+    def test_clear_removes_signal_file(self, signal_dir: SignalDir) -> None:
+        signal_dir.notify("alice")
+        path = signal_path_for(signal_dir.path, "alice")
+        assert path.is_file()
+        signal_dir.clear("alice")
+        assert not path.exists()
+
+    def test_clear_is_idempotent_no_signal(self, signal_dir: SignalDir) -> None:
+        """clear() on a non-existent signal is a silent no-op (no FileNotFoundError)."""
+        path = signal_path_for(signal_dir.path, "ghost")
+        assert not path.exists()
+        signal_dir.clear("ghost")  # must not raise
+        assert not path.exists()
+
+    def test_inbox_clears_signal_on_consuming_read(
+        self, store: Store, signal_dir: SignalDir
+    ) -> None:
+        """After ``tool_agent_inbox(unread_only=True)`` drains messages, the signal
+        file must be gone so the next ``agent_subscribe`` waits for a fresh send.
+        """
+        store.upsert_agent("alice")
+        store.upsert_agent("bob")
+        tool_agent_send(store, "alice", target="bob", message="m1", signal_dir=signal_dir)
+        assert signal_path_for(signal_dir.path, "bob").is_file()
+
+        result = tool_agent_inbox(
+            store, "bob", unread_only=True, signal_dir=signal_dir
+        )
+        assert len(result["messages"]) == 1
+        assert not signal_path_for(signal_dir.path, "bob").exists()
+
+    def test_inbox_does_not_clear_when_empty(
+        self, store: Store, signal_dir: SignalDir
+    ) -> None:
+        """Empty consuming read must NOT touch an external signal that arrived
+        concurrently (nothing to drain, and a future send's signal could be racing).
+        """
+        store.upsert_agent("alice")
+        # External signal from a send whose row hasn't committed yet (contrived,
+        # but captures the invariant): inbox read returns [], signal stays.
+        signal_dir.notify("alice")
+        result = tool_agent_inbox(
+            store, "alice", unread_only=True, signal_dir=signal_dir
+        )
+        assert result["messages"] == []
+        assert signal_path_for(signal_dir.path, "alice").is_file()
+
+    def test_inbox_peek_never_clears_signal(
+        self, store: Store, signal_dir: SignalDir
+    ) -> None:
+        """``agent_inbox_peek`` (non-consuming) must leave the signal alone even
+        if messages are returned.
+        """
+        from a2a_mcp_bridge.tools import tool_agent_inbox_peek
+
+        store.upsert_agent("alice")
+        store.upsert_agent("bob")
+        tool_agent_send(store, "alice", target="bob", message="m1", signal_dir=signal_dir)
+        assert signal_path_for(signal_dir.path, "bob").is_file()
+
+        # Peek returns the message but does not mutate state.
+        result = tool_agent_inbox_peek(store, "bob")
+        assert len(result["messages"]) == 1
+        assert signal_path_for(signal_dir.path, "bob").is_file()
+
+    def test_inbox_without_signal_dir_is_backwards_compat(self, store: Store) -> None:
+        """Callers that don't pass ``signal_dir`` (unit tests, v0.5 clients) still work."""
+        store.upsert_agent("alice")
+        store.upsert_agent("bob")
+        store.send_message("alice", "bob", "hello")
+        result = tool_agent_inbox(store, "bob", unread_only=True)
+        assert len(result["messages"]) == 1
+
+    def test_subscribe_after_inbox_drain_waits_for_fresh_signal(
+        self, store: Store, signal_dir: SignalDir
+    ) -> None:
+        """End-to-end regression for the v0.5.1 bug:
+        send → inbox (consume) → send2 → subscribe must resolve on the NEW signal
+        with ``messages=[msg2]`` AND ``timed_out=False``, not fast-path on a stale
+        pre-drain signal.
+        """
+        db_path = store.db_path
+        store.upsert_agent("alice")
+        store.upsert_agent("bob")
+
+        # 1st round: send → inbox drains it → signal should be cleared.
+        tool_agent_send(store, "alice", target="bob", message="m1", signal_dir=signal_dir)
+        drain = tool_agent_inbox(store, "bob", unread_only=True, signal_dir=signal_dir)
+        assert len(drain["messages"]) == 1
+        assert not signal_path_for(signal_dir.path, "bob").exists(), (
+            "v0.5.1 invariant: agent_inbox must clear the signal after consuming read"
+        )
+
+        # 2nd round: schedule a send slightly after subscribe starts; subscribe must
+        # wake on the NEW signal, not return stale empty from a residual file.
+        def send_after_delay() -> None:
+            sender_store = Store(db_path)
+            time.sleep(0.2)
+            tool_agent_send(
+                sender_store, "alice", target="bob", message="m2", signal_dir=signal_dir
+            )
+            sender_store.close()
+
+        threading.Thread(target=send_after_delay, daemon=True).start()
+        start = time.monotonic()
+        result = tool_agent_subscribe(
+            store,
+            "bob",
+            signal_dir=signal_dir,
+            timeout_seconds=3.0,
+            poll_interval=0.05,
+        )
+        elapsed = time.monotonic() - start
+
+        # Core assertions: fresh wake, not stale-signal fast-path.
+        assert len(result["messages"]) == 1
+        assert result["messages"][0]["body"] == "m2"
+        assert result["timed_out"] is False
+        # Must have actually waited for the delayed send (not returned < 50ms on
+        # fast-path of a stale signal).
+        assert elapsed >= 0.15, f"expected to wait for fresh signal, got {elapsed:.3f}s"
