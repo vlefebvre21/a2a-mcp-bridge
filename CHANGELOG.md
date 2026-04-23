@@ -4,6 +4,56 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-04-23
+
+**Theme** — signal cleanup bugfix for `agent_inbox` + `agent_subscribe` wake-up
+correctness. A consuming read (`agent_inbox` with `unread_only=True`) now
+clears the per-agent signal file, so a subsequent `agent_subscribe` waits for
+the next real send instead of fast-pathing on a stale signal with an empty
+inbox.
+
+### Fixed
+- **`agent_inbox` leaves stale signal file after consuming read** — before
+  v0.5.1, `agent_inbox(unread_only=True)` drained unread messages from the
+  SQLite store but left `<signal_dir>/<agent_id>.notify` in place. A
+  subsequent `agent_subscribe` call then hit the fast-path in
+  `SignalDir.wait()` (which consumes the pre-existing signal) and returned
+  immediately with `messages=[]` and `timed_out=False`, breaking the real-time
+  wake-up contract. Now `tool_agent_inbox` clears the signal file via a new
+  `SignalDir.clear(agent_id)` method when the read consumed at least one
+  message (`unread_only=True and count > 0`). `agent_inbox_peek` does NOT
+  clear (it is a read-only view by design — see ADR-001 Option A′).
+
+### Added
+- **`SignalDir.clear(agent_id)`** — new best-effort helper that removes the
+  agent's signal file if present. Idempotent (no-op if the file does not
+  exist), and swallows `FileNotFoundError` / other `OSError` kinds so a
+  signal failure never blocks the canonical inbox read.
+
+### Changed
+- **`tool_agent_inbox` signature** — gained optional `signal_dir: SignalDir
+  | None = None` kwarg. Backwards-compatible: existing callers (unit tests,
+  v0.5 clients that don't pass the wiring) continue to work, they just don't
+  get the cleanup behaviour. The server closure in `build_server` wires it
+  automatically.
+
+### Tests
+- 7 new tests in `TestSignalCleanupV051` covering `SignalDir.clear`
+  idempotence, consuming-read cleanup, empty-read non-interference,
+  `agent_inbox_peek` signal preservation, backwards-compat without
+  `signal_dir`, and an end-to-end regression test
+  (`test_subscribe_after_inbox_drain_waits_for_fresh_signal`) that asserts
+  the core v0.5.1 invariant: `send → inbox (drain) → send2 → subscribe`
+  wakes on the NEW signal with `timed_out=False`, not fast-path on a
+  pre-drain residual.
+
+### Deferred
+- **ADR-001 §4 deprecation of `agent_subscribe` for Hermes gateway sessions**
+  — this was discussed during v0.5.1 triage but intentionally split into a
+  separate documentation PR (post-merge of this bugfix) so the bugfix stays
+  cherry-pickable and the policy shift gets its own round of review. See
+  follow-up branch `docs/adr-001-deprecate-subscribe-for-sessions`.
+
 ## [0.5.0] - 2026-04-23
 
 **Theme** — bridge-side primitives for multi-session concurrency (ADR-001

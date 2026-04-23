@@ -238,6 +238,7 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
             limit=limit,
             unread_only=unread_only,
             session_id=session_id,
+            signal_dir=signal_dir,
         )
 
     @mcp.tool()
