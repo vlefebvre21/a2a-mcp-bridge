@@ -89,10 +89,51 @@ Some profiles benefit from Y (the orchestrator `vlbeau-main` — one continuous 
 **Trade-offs:**
 - ✅ Migrates incrementally: start X everywhere, flip profiles to Y as needed.
 - ✅ Respects profile heterogeneity (orchestrator ≠ batch worker).
-- ❌ Doubles the surface: two code paths, two test matrices, two failure modes.
+- ❌ Doubles some surface, but less than naive sum suggests: two code paths and two test matrices, yes — but the **session lifecycle infrastructure is shared** between Y and Z (see §3.5 below). Empirically closer to **~1.3×** than 2×.
 - ❌ Downstream agents (other profiles on the bus) need to know or discover which mode a recipient is in, to reason about whether they're talking to one thread or many. Or we hide this behind a consistent facade (e.g. `agent_list` exposes `session_mode`).
 
-**Cost:** X cost + Y cost + integration layer (~3-4 weeks total if both paths fully implemented).
+**Cost:** X cost + Y cost − shared-infra savings + integration layer (~3 weeks total if both paths fully implemented; ~2 weeks if we defer the `session_mode` facade and let peers introspect via `agent_list`).
+
+### 3.5 Session lifecycle & garbage collection (applies to Y and Z)
+
+Option Y (and therefore Z) introduces a schema dependency that Option X does not have: a persistent **`sessions`** table on the bridge side, tracking live persistent-session consumers. Current v0.5.0 schema has no such table — `messages.sender_session_id` is a tag column, not a consumer cursor. Before adopting Y/Z we must decide the GC strategy.
+
+**Proposed schema** (minimum viable):
+
+```sql
+CREATE TABLE sessions (
+    agent_id         TEXT NOT NULL,
+    session_id       TEXT NOT NULL,
+    last_heartbeat_at TIMESTAMP NOT NULL,
+    last_read_at     TIMESTAMP,
+    status           TEXT NOT NULL DEFAULT 'active',  -- active | expired | draining
+    origin_metadata  JSON,                            -- Telegram chat_id, webhook URL, etc.
+    PRIMARY KEY (agent_id, session_id)
+);
+```
+
+Strategies considered (ordered by simplicity):
+
+**1. TTL passive on `last_heartbeat_at` — baseline recommendation.**
+- Each `agent_subscribe(persistent=True)` call bumps `last_heartbeat_at = now()`.
+- Passive sweep (triggered on inbox reads, no background thread required): any session with `heartbeat < now() - 1h` → `status = 'expired'`, unconsumed messages fall back to the global inbox (`read_at` stays NULL, they become deliverable to the next consumer).
+- **Pro:** no active monitoring, no bridge-side thread, no new cron.
+- **Con:** a flapping `read_at` can cause a message to be redistributed after expiration. Acceptable if agents assume idempotence on their handlers (already required by §9 of `a2a-inbox-triage`: "verify before apologizing").
+
+**2. LRU cap per `agent_id` — refinement if respawn-races observed.**
+- Soft cap: 1 persistent session per profile (nominal case).
+- Hard cap: 3 (tolerates respawn race during restart). Beyond → reject with `SESSION_QUOTA_EXCEEDED`, new session waits for LRU expiry.
+- **Pro:** bounds memory, prevents fleet-wide explosion. 9 profiles × 1 session = 9 queues, sustainable.
+- **Con:** adds a per-agent counter check on `agent_subscribe(persistent=True)`. Small surface.
+
+**3. Fleet-wide hard cap N — not recommended.**
+- Recreates the "who gets the slot?" problem that v0.5 just solved. Skip.
+
+**Recommendation:** ship **strategy 1 (TTL)** as baseline in the v0.7 Option Y path. Add **strategy 2 (LRU per agent_id)** only if production telemetry shows respawn-race session accumulation. No fleet-wide cap.
+
+**Cross-benefit with Option Z:** once the `sessions` table exists for GC, it is also the natural home for per-session origin metadata (Telegram chat_id, HTTP response handle, started_at, etc.) that Option Y's trigger demux needs to route replies back to the correct channel. The incremental cost of supporting both modes under Z is therefore **~1.3× Option Y alone**, not 2× — the lifecycle infrastructure is mutualized between them. This strengthens the Z recommendation in §5 against the "doubles the surface" critique in §3.3.
+
+**Acknowledgement:** the GC analysis in this section was contributed by Qwen (vlbeau-qwen36) on 2026-04-23, 07:38 UTC — cross-agent review of the initial ADR draft.
 
 ### 3.4 Option W — Do nothing more (stop at v0.5 primitives)
 
