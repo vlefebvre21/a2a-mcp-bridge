@@ -94,6 +94,18 @@ Some profiles benefit from Y (the orchestrator `vlbeau-main` — one continuous 
 
 **Cost:** X cost + Y cost − shared-infra savings + integration layer (~3 weeks total if both paths fully implemented; ~2 weeks if we defer the `session_mode` facade and let peers introspect via `agent_list`).
 
+### 3.4 Option W — Do nothing more (stop at v0.5 primitives)
+
+Keep v0.5 as-is. Document the limitations. The primitives (`agent_inbox_peek`, `session_id` metadata) give downstream agents enough tools to reason about session fragmentation explicitly. Users and agents learn to work with "agent_id = profile, not conversation".
+
+**Fixes:** nothing beyond v0.5.
+**Trade-offs:**
+- ✅ Zero additional cost.
+- ❌ The ADR-001 risks #1-#7 remain.
+- ❌ User experience stays confusing (the 2026-04-23 incident is evidence).
+
+Listed for completeness; not recommended.
+
 ### 3.5 Session lifecycle & garbage collection (applies to Y and Z)
 
 Option Y (and therefore Z) introduces a schema dependency that Option X does not have: a persistent **`sessions`** table on the bridge side, tracking live persistent-session consumers. Current v0.5.0 schema has no such table — `messages.sender_session_id` is a tag column, not a consumer cursor. Before adopting Y/Z we must decide the GC strategy.
@@ -106,7 +118,7 @@ CREATE TABLE sessions (
     session_id       TEXT NOT NULL,
     last_heartbeat_at TIMESTAMP NOT NULL,
     last_read_at     TIMESTAMP,
-    status           TEXT NOT NULL DEFAULT 'active',  -- active | expired | draining
+    status           TEXT NOT NULL DEFAULT 'active',  -- active | expired (see §3.5.1)
     origin_metadata  JSON,                            -- Telegram chat_id, webhook URL, etc.
     PRIMARY KEY (agent_id, session_id)
 );
@@ -175,18 +187,6 @@ A three-state machine `active | draining | expired` was evaluated in detail. The
 Re-introducing `draining` in v0.8+ remains trivial: the SQL column is already `TEXT`, so `ALTER TYPE status ADD VALUE 'draining'` (Postgres) or just widening the `CHECK` constraint (SQLite) is a one-migration change if a graceful `agent_close_session()` with async drain window is ever spec'd. The cost of delaying the decision is therefore zero, and the benefit of a simpler v0.7 invariant is material. YAGNI.
 
 **Acknowledgement:** the §3.5.1 state machine (two-state form) was designed jointly by Qwen (vlbeau-qwen36) and Opus (vlbeau-opus) via A2A on 2026-04-23, 07:46–08:00 UTC. An earlier three-state draft was superseded by this section after cross-review converged on monotonicity over drain-granularity.
-
-### 3.4 Option W — Do nothing more (stop at v0.5 primitives)
-
-Keep v0.5 as-is. Document the limitations. The primitives (`agent_inbox_peek`, `session_id` metadata) give downstream agents enough tools to reason about session fragmentation explicitly. Users and agents learn to work with "agent_id = profile, not conversation".
-
-**Fixes:** nothing beyond v0.5.
-**Trade-offs:**
-- ✅ Zero additional cost.
-- ❌ The ADR-001 risks #1-#7 remain.
-- ❌ User experience stays confusing (the 2026-04-23 incident is evidence).
-
-Listed for completeness; not recommended.
 
 ## 4. Decision criteria
 
