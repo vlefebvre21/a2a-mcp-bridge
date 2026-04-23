@@ -34,7 +34,8 @@ restarts and to correlate log lines across concurrent agent sessions.
 - **`agent_send` session propagation** — when the caller supplies
   `metadata={"session_id": "..."}`, the value is stored in
   `messages.sender_session_id` and surfaced to the recipient's inbox
-  payload. Non-string or oversize values are ignored (no error).
+  payload. Non-string or oversize values are rejected with error codes
+  `SESSION_ID_INVALID` / `SESSION_ID_TOO_LARGE` (≤ 128 chars).
 - **`src/a2a_mcp_bridge/logging_ext.py`** — structured logging helper.
   Minimum schema: `{ts, level, event, agent_id}`; optional extras:
   `session_id, message_id, target, duration_ms, body_hash, error_code`.
