@@ -134,7 +134,50 @@ Strategies considered (ordered by simplicity):
 
 **Cross-benefit with Option Z:** once the `sessions` table exists for GC, it is also the natural home for per-session origin metadata (Telegram chat_id, HTTP response handle, started_at, etc.) that Option Y's trigger demux needs to route replies back to the correct channel. The incremental cost of supporting both modes under Z is therefore **~1.3× Option Y alone**, not 2× — the lifecycle infrastructure is mutualized between them. This strengthens the Z recommendation in §5 against the "doubles the surface" critique in §3.3.
 
-**Acknowledgement:** the GC analysis in this section was contributed by Qwen (vlbeau-qwen36) on 2026-04-23, 07:38 UTC — cross-agent review of the initial ADR draft.
+**Acknowledgement:** the GC analysis in this section was contributed by Qwen (vlbeau-qwen36) on 2026-04-23, 07:38 UTC — cross-agent review of the initial ADR draft. The `bounded sweep` refinement under strategy 1 was added by Opus (vlbeau-opus) on 2026-04-23, 07:48 UTC.
+
+#### 3.5.1 Session state machine
+
+The `status` column in the `sessions` table takes values `active | draining | expired`. The three states are genuinely distinct — different triggers, different invariants on message routing, different recovery paths on bridge crash. Conflating `draining` into `active + shutdown_pending BOOLEAN` would lose the routing distinction that `draining` makes observable; we keep it as a first-class state.
+
+**Transitions** (from-state × trigger → to-state):
+
+| From | Trigger | To | Who fires it |
+|---|---|---|---|
+| _(none)_ | `agent_subscribe(persistent=True)` on fresh `(agent_id, session_id)` | `active` | client (insert row) |
+| `active` | `agent_subscribe(persistent=True)` on existing row | `active` | client (bumps `last_heartbeat_at`) |
+| `active` | `agent_unsubscribe(session_id)` or subscribe long-poll closes with `close=True` | `draining` | client (explicit graceful shutdown) |
+| `active` | `last_heartbeat_at < now() - TTL` caught by passive sweep | `expired` | bridge (sweep, bounded N=100/read) |
+| `draining` | queue empty for this `(agent_id, session_id)` | `expired` | bridge (observed on next sweep or on read) |
+| `draining` | `last_heartbeat_at < now() - drain_TTL` (bounded drain, e.g. 5 min) | `expired` | bridge (forces exit even if queue non-empty) |
+| `expired` | _(terminal)_ | — | — |
+
+**Invariants:**
+
+1. **No backward transitions.** `active → draining → expired` is strictly monotonic. An expired session cannot resurrect; a new subscribe with the same `session_id` creates a fresh row (PK is `(agent_id, session_id)`, so clients must mint a new `session_id` after expiry — they do not get to reuse).
+2. **No direct `active → expired` via explicit close.** A client that signals shutdown enters `draining` first so already-queued messages get one last delivery window. Only the passive TTL sweep (no client signal) short-circuits to `expired`.
+3. **Message routing by state:**
+   - `active` — new `agent_send(target=agent_id, metadata.session_id=X)` messages are enqueued to session X's queue.
+   - `draining` — new `agent_send` with `metadata.session_id=X` rejects the session pin and falls back to global inbox (as if the session did not exist). Already-queued messages remain deliverable to X's outstanding `agent_subscribe` long-poll until queue empty or `drain_TTL`.
+   - `expired` — row is a tombstone. Any remaining queued messages' `sender_session_id` tags are dropped (set back to NULL on the `messages` row) and they become deliverable via the global inbox fan-out. A background sweep or the first `agent_inbox` read after expiry performs this recycling.
+4. **One row per `(agent_id, session_id)`.** Clients that lose their subscribe long-poll connection and reconnect with the same `session_id` within TTL land back on `active` (heartbeat bump). Reconnects after `expired` get a fresh row only if they mint a new `session_id` — an intentional nudge so clients don't silently race against recycled queues.
+
+**Crash / degradation semantics:**
+
+- **Bridge crash during `draining`** — on restart, any session in `draining` older than `drain_TTL` is swept to `expired` as above. A session in `draining` younger than `drain_TTL` stays `draining`; its queue is intact (messages table is durable), but no new long-poll reconnect is accepted in `draining` (the client that requested drain is assumed gone). The drain window thus acts as a bounded grace period, not an open-ended wait.
+- **Bridge crash during `active`** — session rows persist. Client's long-poll reconnects resume cleanly; `last_heartbeat_at` is bumped on the first reconnect. No message loss because `messages` is the source of truth, not the in-memory long-poll wait queue.
+- **Client crash (no graceful close)** — the session sits in `active` until its TTL elapses, then is swept to `expired`. This is the expected path for unclean shutdowns; the cost is a 1h delay before the queued messages fall back to the global inbox. If that latency is unacceptable for a given client class, the client must call `agent_unsubscribe` on a `SIGTERM` handler to enter `draining` explicitly.
+- **Bounded drain timeout rationale (`drain_TTL` ~5 min, well below the 1h `active` TTL):** `draining` exists to give in-flight messages a last window; it is not meant to hold indefinitely. A stuck drain (client crashes mid-drain) should recycle faster than a stuck `active` because we already know it is not coming back.
+
+**What this buys us**, concretely:
+
+- **Predictable delivery during graceful shutdown.** A client that plans to exit can tell the bridge, and the bridge stops routing new messages to its queue while still flushing what's already there. Without `draining`, the choice is "expire immediately and lose up to 1h of already-queued work" or "keep enqueueing to a dying session".
+- **Observable drain progress.** Operators / peers doing `agent_list` see `draining` as distinct from `active` and can decide to re-route work (e.g. trigger a respawn targeted at a different profile) without waiting for TTL.
+- **Clear invariant for peers.** A peer agent that sends to a `draining` session does not silently enqueue into a dead queue; its message lands in the global inbox and is visible to the next live consumer. This preserves the "no message theft" guarantee of v0.5 even across graceful shutdowns.
+
+**Cost of keeping three states vs. two + flag:** one extra enum value, one extra row of the transition table in docs. The SQL schema is unchanged (the column is already `TEXT NOT NULL DEFAULT 'active'` with three legal values). The bridge-side code paths are the same; `draining` just means "skip me for new message pins" — a one-line check in the `agent_send` pin selection. Net: negligible implementation cost, non-trivial semantic clarity.
+
+**Acknowledgement:** the §3.5.1 state machine was contributed by Qwen (vlbeau-qwen36) on 2026-04-23, 07:50 UTC, in response to Opus's request for a verdict on whether `draining` is a first-class state.
 
 ### 3.4 Option W — Do nothing more (stop at v0.5 primitives)
 
