@@ -44,7 +44,8 @@ class Store:
         branches naturally. For pre-v0.5 DBs on disk we need to add columns
         introduced later without dropping data.
 
-        Each migration step:
+        Each migration step is delegated to :meth:`_add_column_if_missing`,
+        which:
           * wraps its work in ``BEGIN IMMEDIATE`` / ``COMMIT`` so a concurrent
             writer (e.g. another Hermes profile spinning up) cannot interleave
             between the ``PRAGMA table_info`` probe and the ``ALTER TABLE``;
@@ -60,58 +61,71 @@ class Store:
           intent coupling, see ADR-002).
         """
         # v0.5 — messages.sender_session_id
-        existing_cols = {
-            row["name"]
-            for row in self._conn.execute("PRAGMA table_info(messages)").fetchall()
-        }
-        if "sender_session_id" not in existing_cols:
-            self._conn.execute("BEGIN IMMEDIATE")
-            try:
-                # Re-check inside the transaction in case a concurrent writer
-                # raced us between the probe above and here.
-                cols = {
-                    row["name"]
-                    for row in self._conn.execute(
-                        "PRAGMA table_info(messages)"
-                    ).fetchall()
-                }
-                if "sender_session_id" not in cols:
-                    self._conn.execute(
-                        "ALTER TABLE messages ADD COLUMN sender_session_id TEXT"
-                    )
-                self._conn.execute("COMMIT")
-            except Exception:
-                self._conn.execute("ROLLBACK")
-                raise
+        self._add_column_if_missing(
+            table="messages",
+            column="sender_session_id",
+            column_type="TEXT",
+        )
+        # v0.6 — messages.intent (ADR-002). NOT NULL + DEFAULT 'triage' so
+        # SQLite back-fills existing rows (every pre-ADR-002 message is
+        # semantically a triage handoff, preserving backward-compat).
+        self._add_column_if_missing(
+            table="messages",
+            column="intent",
+            column_type="TEXT NOT NULL DEFAULT 'triage'",
+        )
 
-        # v0.6 — messages.intent (ADR-002)
-        # Re-read after any v0.5 migration so the probe reflects the latest
-        # schema without another round-trip.
+    def _add_column_if_missing(
+        self,
+        *,
+        table: str,
+        column: str,
+        column_type: str,
+    ) -> None:
+        """Idempotently add ``column`` to ``table`` with the given type clause.
+
+        Safe to call repeatedly: if the column already exists (fresh DB
+        created from the current ``CREATE TABLE IF NOT EXISTS`` schema, or
+        prior migration run), this is a no-op. The probe-then-ALTER race
+        against a concurrent writer is closed by a ``BEGIN IMMEDIATE``
+        transaction around the second probe + the ALTER itself.
+
+        Args:
+            table: target table name (unvalidated — caller-controlled).
+            column: column name to add.
+            column_type: full SQL type clause minus ``ADD COLUMN``, e.g.
+                ``TEXT`` or ``TEXT NOT NULL DEFAULT 'triage'``. NOT NULL +
+                DEFAULT is required to back-fill existing rows; a bare
+                ``TEXT`` produces NULL in old rows.
+        """
         existing_cols = {
             row["name"]
-            for row in self._conn.execute("PRAGMA table_info(messages)").fetchall()
+            for row in self._conn.execute(
+                f"PRAGMA table_info({table})"
+            ).fetchall()
         }
-        if "intent" not in existing_cols:
-            self._conn.execute("BEGIN IMMEDIATE")
-            try:
-                cols = {
-                    row["name"]
-                    for row in self._conn.execute(
-                        "PRAGMA table_info(messages)"
-                    ).fetchall()
-                }
-                if "intent" not in cols:
-                    # NOT NULL + DEFAULT 'triage': SQLite back-fills existing
-                    # rows with the default, preserving backward-compat (every
-                    # pre-ADR-002 message is semantically a triage handoff).
-                    self._conn.execute(
-                        "ALTER TABLE messages "
-                        "ADD COLUMN intent TEXT NOT NULL DEFAULT 'triage'"
-                    )
-                self._conn.execute("COMMIT")
-            except Exception:
-                self._conn.execute("ROLLBACK")
-                raise
+        if column in existing_cols:
+            return
+
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            # Re-check inside the transaction in case a concurrent writer
+            # (another Hermes profile starting up) raced us between the probe
+            # above and here.
+            cols = {
+                row["name"]
+                for row in self._conn.execute(
+                    f"PRAGMA table_info({table})"
+                ).fetchall()
+            }
+            if column not in cols:
+                self._conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN {column} {column_type}"
+                )
+            self._conn.execute("COMMIT")
+        except Exception:
+            self._conn.execute("ROLLBACK")
+            raise
 
     def close(self) -> None:
         self._conn.close()

@@ -173,9 +173,11 @@ gateway / skills:
 
 **Bridge-side (this repo)**
 
-1. **`intent` field on `agent_send`** — optional string, enum-validated
+1. **`intent` field on `agent_send`** — optional string, validated
    against a fixed list (`triage`, `execute`, `review`, `question`,
-   `fyi`). Unknown values rejected with a clear error. Default: `triage`.
+   `fyi`). Unknown values are **downgraded to `triage` with a WARNING
+   log** rather than rejected, for forward-compat with future enum
+   extensions (see §4.1 below and §5.3 resolved Q5). Default: `triage`.
 2. **Intent propagation** — `intent` stored on the message row, echoed
    in `agent_inbox` / `agent_inbox_peek` output, and included in the
    wake-up webhook payload.
