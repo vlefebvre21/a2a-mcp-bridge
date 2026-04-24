@@ -284,7 +284,7 @@ class Store:
                 created_at=datetime.fromisoformat(r["created_at"]),
                 read_at=datetime.fromisoformat(r["read_at"]) if r["read_at"] else None,
                 sender_session_id=r["sender_session_id"],
-                intent=r["intent"] if "intent" in r.keys() else "triage",
+                intent=r["intent"],
             )
             for r in rows
         ]
@@ -353,7 +353,7 @@ class Store:
                 created_at=datetime.fromisoformat(r["created_at"]),
                 read_at=datetime.fromisoformat(r["read_at"]) if r["read_at"] else None,
                 sender_session_id=r["sender_session_id"],
-                intent=r["intent"] if "intent" in r.keys() else "triage",
+                intent=r["intent"],
             )
             for r in rows
         ]

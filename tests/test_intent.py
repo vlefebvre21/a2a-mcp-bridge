@@ -5,11 +5,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from a2a_mcp_bridge.intents import normalize_intent, wakes, VALID_INTENTS, DEFAULT_INTENT
+from a2a_mcp_bridge.intents import normalize_intent, wakes
 from a2a_mcp_bridge.store import Store
-from a2a_mcp_bridge.tools import tool_agent_send, tool_agent_inbox
+from a2a_mcp_bridge.tools import tool_agent_inbox, tool_agent_send
 from a2a_mcp_bridge.wake import WebhookWaker
-
 
 # ---------------------------------------------------------------------------
 # Test 1: normalize_intent behaviour

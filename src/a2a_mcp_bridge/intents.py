@@ -1,7 +1,7 @@
 """Wake-up intent enum for ``agent_send`` (ADR-002).
 
 An intent annotates a message with its delivery semantics. Current v0.6 scope
-(Option γ — 5 values declared, binary wake behaviour):
+(Option gamma -- 5 values declared, binary wake behaviour):
 
 * ``triage`` (default) — "read, reply if relevant, done". Current behaviour.
 * ``execute`` — task handoff; recipient continues autonomously until done.
