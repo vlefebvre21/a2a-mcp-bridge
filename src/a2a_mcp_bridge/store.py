@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from .intents import DEFAULT_INTENT
 from .models import (
     MAX_BODY_BYTES,
     MAX_METADATA_BYTES,
@@ -55,6 +56,8 @@ class Store:
 
         * v0.5 — ``messages.sender_session_id TEXT NULL`` (A2A session
           correlation, see ADR-001).
+        * v0.6 — ``messages.intent TEXT NOT NULL DEFAULT 'triage'`` (wake
+          intent coupling, see ADR-002).
         """
         # v0.5 — messages.sender_session_id
         existing_cols = {
@@ -75,6 +78,35 @@ class Store:
                 if "sender_session_id" not in cols:
                     self._conn.execute(
                         "ALTER TABLE messages ADD COLUMN sender_session_id TEXT"
+                    )
+                self._conn.execute("COMMIT")
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
+
+        # v0.6 — messages.intent (ADR-002)
+        # Re-read after any v0.5 migration so the probe reflects the latest
+        # schema without another round-trip.
+        existing_cols = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(messages)").fetchall()
+        }
+        if "intent" not in existing_cols:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                cols = {
+                    row["name"]
+                    for row in self._conn.execute(
+                        "PRAGMA table_info(messages)"
+                    ).fetchall()
+                }
+                if "intent" not in cols:
+                    # NOT NULL + DEFAULT 'triage': SQLite back-fills existing
+                    # rows with the default, preserving backward-compat (every
+                    # pre-ADR-002 message is semantically a triage handoff).
+                    self._conn.execute(
+                        "ALTER TABLE messages "
+                        "ADD COLUMN intent TEXT NOT NULL DEFAULT 'triage'"
                     )
                 self._conn.execute("COMMIT")
             except Exception:
@@ -127,11 +159,21 @@ class Store:
         recipient: str,
         body: str,
         metadata: dict[str, Any] | None = None,
+        intent: str = DEFAULT_INTENT,
     ) -> SendResult:
         if sender == recipient:
             raise ValueError("TARGET_SELF: cannot send to self")
         if len(body.encode("utf-8")) > MAX_BODY_BYTES:
             raise ValueError(f"MESSAGE_TOO_LARGE: body exceeds {MAX_BODY_BYTES} bytes")
+
+        # ``intent`` is expected to already be normalised by the caller (the
+        # tool layer in ``tools.py`` runs ``normalize_intent`` and logs the
+        # downgrade warning). We defensively accept any value here but write
+        # whatever string was provided — the NOT NULL constraint will reject
+        # None, and the column accepts opaque strings so a future caller can
+        # extend the enum without a schema change.
+        if not isinstance(intent, str) or not intent:
+            raise ValueError("INTENT_INVALID: intent must be a non-empty string")
 
         # Extract and validate the optional session_id convention (ADR-001 §4 #2).
         # The session_id travels inside the caller-supplied ``metadata`` dict so
@@ -171,10 +213,10 @@ class Store:
         now = datetime.now(UTC)
         self._conn.execute(
             """
-            INSERT INTO messages (id, sender_id, recipient_id, body, metadata, created_at, sender_session_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO messages (id, sender_id, recipient_id, body, metadata, created_at, sender_session_id, intent)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (message_id, sender, recipient, body, metadata_json, now.isoformat(), session_id),
+            (message_id, sender, recipient, body, metadata_json, now.isoformat(), session_id, intent),
         )
         return SendResult(message_id=message_id, sent_at=now, recipient=recipient)
 
@@ -191,7 +233,7 @@ class Store:
             try:
                 rows = self._conn.execute(
                     """
-                    SELECT id, sender_id, recipient_id, body, metadata, created_at, read_at, sender_session_id
+                    SELECT id, sender_id, recipient_id, body, metadata, created_at, read_at, sender_session_id, intent
                     FROM messages
                     WHERE recipient_id = ? AND read_at IS NULL
                     ORDER BY created_at ASC
@@ -209,7 +251,7 @@ class Store:
                     # Re-read to include read_at values in returned objects
                     rows = self._conn.execute(
                         f"""
-                        SELECT id, sender_id, recipient_id, body, metadata, created_at, read_at, sender_session_id
+                        SELECT id, sender_id, recipient_id, body, metadata, created_at, read_at, sender_session_id, intent
                         FROM messages
                         WHERE id IN ({placeholders})
                         ORDER BY created_at ASC
@@ -223,7 +265,7 @@ class Store:
         else:
             rows = self._conn.execute(
                 """
-                SELECT id, sender_id, recipient_id, body, metadata, created_at, read_at, sender_session_id
+                SELECT id, sender_id, recipient_id, body, metadata, created_at, read_at, sender_session_id, intent
                 FROM messages
                 WHERE recipient_id = ?
                 ORDER BY created_at DESC
@@ -242,6 +284,7 @@ class Store:
                 created_at=datetime.fromisoformat(r["created_at"]),
                 read_at=datetime.fromisoformat(r["read_at"]) if r["read_at"] else None,
                 sender_session_id=r["sender_session_id"],
+                intent=r["intent"] if "intent" in r.keys() else "triage",
             )
             for r in rows
         ]
@@ -280,7 +323,7 @@ class Store:
         if since_ts is None:
             rows = self._conn.execute(
                 """
-                SELECT id, sender_id, recipient_id, body, metadata, created_at, read_at, sender_session_id
+                SELECT id, sender_id, recipient_id, body, metadata, created_at, read_at, sender_session_id, intent
                 FROM messages
                 WHERE recipient_id = ?
                 ORDER BY created_at DESC
@@ -291,7 +334,7 @@ class Store:
         else:
             rows = self._conn.execute(
                 """
-                SELECT id, sender_id, recipient_id, body, metadata, created_at, read_at, sender_session_id
+                SELECT id, sender_id, recipient_id, body, metadata, created_at, read_at, sender_session_id, intent
                 FROM messages
                 WHERE recipient_id = ? AND created_at >= ?
                 ORDER BY created_at ASC
@@ -310,6 +353,7 @@ class Store:
                 created_at=datetime.fromisoformat(r["created_at"]),
                 read_at=datetime.fromisoformat(r["read_at"]) if r["read_at"] else None,
                 sender_session_id=r["sender_session_id"],
+                intent=r["intent"] if "intent" in r.keys() else "triage",
             )
             for r in rows
         ]

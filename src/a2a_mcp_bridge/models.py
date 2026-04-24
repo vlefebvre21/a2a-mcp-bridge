@@ -37,6 +37,7 @@ class Message(BaseModel):
     created_at: datetime
     read_at: datetime | None = None
     sender_session_id: str | None = None
+    intent: str = "triage"
 
     @field_validator("sender_id", "recipient_id")
     @classmethod

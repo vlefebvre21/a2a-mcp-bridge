@@ -177,7 +177,12 @@ class TestSessionIdBackwardCompat:
     def test_existing_inbox_shape_unchanged_without_session_id(
         self, store: Store
     ) -> None:
-        """Pre-v0.5 callers see ``sender_session_id: None`` and that's it."""
+        """Pre-v0.5 callers see ``sender_session_id: None`` + ``intent: 'triage'``.
+
+        Shape updated for ADR-002: ``intent`` is now part of the canonical
+        inbox dict. Omitted caller ``intent`` defaults to ``'triage'``, so
+        backward-compat senders still see a stable (if enriched) shape.
+        """
         _register(store, "alice", "bob")
         tool_agent_send(store, "alice", target="bob", message="hi")
 
@@ -191,6 +196,8 @@ class TestSessionIdBackwardCompat:
             "sent_at",
             "read_at",
             "sender_session_id",
+            "intent",
         }
         assert set(m.keys()) == expected_keys
         assert m["sender_session_id"] is None
+        assert m["intent"] == "triage"

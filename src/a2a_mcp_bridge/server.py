@@ -173,6 +173,7 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
         target: str,
         message: str,
         metadata: dict[str, Any] | None = None,
+        intent: str | None = None,
     ) -> dict[str, Any]:
         """Send a message to another agent on the bus.
 
@@ -190,9 +191,19 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
                 A reserved key ``session_id`` (string, ≤ 128 bytes UTF-8) is
                 hoisted into a dedicated column and surfaced in the inbox
                 payload — see ADR-001 §4 #2.
+            intent: optional wake-up intent (ADR-002). One of
+                ``triage`` (default), ``execute``, ``review``, ``question``,
+                ``fyi``. Controls the recipient wake-up behaviour:
+                  * ``fyi`` — no webhook wake-up; recipient reads the message
+                    at the next natural inbox poll. Use for notifications
+                    that do not require an immediate reply.
+                  * all others — standard webhook wake-up (current behaviour).
+                Unknown values downgrade to ``triage`` with a WARNING log.
 
         Returns:
-            {"message_id", "sent_at", "recipient"} on success, or {"error": {"code", "message"}}.
+            ``{"message_id", "sent_at", "recipient", "intent"}`` on success
+            (``intent`` is the normalised value actually stored), or
+            ``{"error": {"code", "message"}}``.
             Validation errors on the reserved session_id key:
             ``SESSION_ID_INVALID`` (not a string) or ``SESSION_ID_TOO_LARGE``.
 
@@ -201,9 +212,12 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
 
         Side effect (v0.4.4+): if `A2A_WAKE_REGISTRY` points at a valid v0.4.4
         webhook registry, fires an HMAC-signed wake-up POST to the recipient's
-        local gateway endpoint.
+        local gateway endpoint. SKIPPED for ``intent=fyi`` (ADR-002).
         """
-        return tool_agent_send(store, agent_id, target, message, metadata, signal_dir, waker)
+        return tool_agent_send(
+            store, agent_id, target, message, metadata, signal_dir, waker,
+            intent=intent,
+        )
 
     @mcp.tool()
     def agent_inbox(
