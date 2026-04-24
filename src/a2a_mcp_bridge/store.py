@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from .intents import DEFAULT_INTENT
 from .models import (
     MAX_BODY_BYTES,
     MAX_METADATA_BYTES,
@@ -43,7 +44,8 @@ class Store:
         branches naturally. For pre-v0.5 DBs on disk we need to add columns
         introduced later without dropping data.
 
-        Each migration step:
+        Each migration step is delegated to :meth:`_add_column_if_missing`,
+        which:
           * wraps its work in ``BEGIN IMMEDIATE`` / ``COMMIT`` so a concurrent
             writer (e.g. another Hermes profile spinning up) cannot interleave
             between the ``PRAGMA table_info`` probe and the ``ALTER TABLE``;
@@ -55,31 +57,75 @@ class Store:
 
         * v0.5 — ``messages.sender_session_id TEXT NULL`` (A2A session
           correlation, see ADR-001).
+        * v0.6 — ``messages.intent TEXT NOT NULL DEFAULT 'triage'`` (wake
+          intent coupling, see ADR-002).
         """
         # v0.5 — messages.sender_session_id
+        self._add_column_if_missing(
+            table="messages",
+            column="sender_session_id",
+            column_type="TEXT",
+        )
+        # v0.6 — messages.intent (ADR-002). NOT NULL + DEFAULT 'triage' so
+        # SQLite back-fills existing rows (every pre-ADR-002 message is
+        # semantically a triage handoff, preserving backward-compat).
+        self._add_column_if_missing(
+            table="messages",
+            column="intent",
+            column_type="TEXT NOT NULL DEFAULT 'triage'",
+        )
+
+    def _add_column_if_missing(
+        self,
+        *,
+        table: str,
+        column: str,
+        column_type: str,
+    ) -> None:
+        """Idempotently add ``column`` to ``table`` with the given type clause.
+
+        Safe to call repeatedly: if the column already exists (fresh DB
+        created from the current ``CREATE TABLE IF NOT EXISTS`` schema, or
+        prior migration run), this is a no-op. The probe-then-ALTER race
+        against a concurrent writer is closed by a ``BEGIN IMMEDIATE``
+        transaction around the second probe + the ALTER itself.
+
+        Args:
+            table: target table name (unvalidated — caller-controlled).
+            column: column name to add.
+            column_type: full SQL type clause minus ``ADD COLUMN``, e.g.
+                ``TEXT`` or ``TEXT NOT NULL DEFAULT 'triage'``. NOT NULL +
+                DEFAULT is required to back-fill existing rows; a bare
+                ``TEXT`` produces NULL in old rows.
+        """
         existing_cols = {
             row["name"]
-            for row in self._conn.execute("PRAGMA table_info(messages)").fetchall()
+            for row in self._conn.execute(
+                f"PRAGMA table_info({table})"
+            ).fetchall()
         }
-        if "sender_session_id" not in existing_cols:
-            self._conn.execute("BEGIN IMMEDIATE")
-            try:
-                # Re-check inside the transaction in case a concurrent writer
-                # raced us between the probe above and here.
-                cols = {
-                    row["name"]
-                    for row in self._conn.execute(
-                        "PRAGMA table_info(messages)"
-                    ).fetchall()
-                }
-                if "sender_session_id" not in cols:
-                    self._conn.execute(
-                        "ALTER TABLE messages ADD COLUMN sender_session_id TEXT"
-                    )
-                self._conn.execute("COMMIT")
-            except Exception:
-                self._conn.execute("ROLLBACK")
-                raise
+        if column in existing_cols:
+            return
+
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            # Re-check inside the transaction in case a concurrent writer
+            # (another Hermes profile starting up) raced us between the probe
+            # above and here.
+            cols = {
+                row["name"]
+                for row in self._conn.execute(
+                    f"PRAGMA table_info({table})"
+                ).fetchall()
+            }
+            if column not in cols:
+                self._conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN {column} {column_type}"
+                )
+            self._conn.execute("COMMIT")
+        except Exception:
+            self._conn.execute("ROLLBACK")
+            raise
 
     def close(self) -> None:
         self._conn.close()
@@ -127,11 +173,21 @@ class Store:
         recipient: str,
         body: str,
         metadata: dict[str, Any] | None = None,
+        intent: str = DEFAULT_INTENT,
     ) -> SendResult:
         if sender == recipient:
             raise ValueError("TARGET_SELF: cannot send to self")
         if len(body.encode("utf-8")) > MAX_BODY_BYTES:
             raise ValueError(f"MESSAGE_TOO_LARGE: body exceeds {MAX_BODY_BYTES} bytes")
+
+        # ``intent`` is expected to already be normalised by the caller (the
+        # tool layer in ``tools.py`` runs ``normalize_intent`` and logs the
+        # downgrade warning). We defensively accept any value here but write
+        # whatever string was provided — the NOT NULL constraint will reject
+        # None, and the column accepts opaque strings so a future caller can
+        # extend the enum without a schema change.
+        if not isinstance(intent, str) or not intent:
+            raise ValueError("INTENT_INVALID: intent must be a non-empty string")
 
         # Extract and validate the optional session_id convention (ADR-001 §4 #2).
         # The session_id travels inside the caller-supplied ``metadata`` dict so
@@ -171,10 +227,10 @@ class Store:
         now = datetime.now(UTC)
         self._conn.execute(
             """
-            INSERT INTO messages (id, sender_id, recipient_id, body, metadata, created_at, sender_session_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO messages (id, sender_id, recipient_id, body, metadata, created_at, sender_session_id, intent)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (message_id, sender, recipient, body, metadata_json, now.isoformat(), session_id),
+            (message_id, sender, recipient, body, metadata_json, now.isoformat(), session_id, intent),
         )
         return SendResult(message_id=message_id, sent_at=now, recipient=recipient)
 
@@ -191,7 +247,7 @@ class Store:
             try:
                 rows = self._conn.execute(
                     """
-                    SELECT id, sender_id, recipient_id, body, metadata, created_at, read_at, sender_session_id
+                    SELECT id, sender_id, recipient_id, body, metadata, created_at, read_at, sender_session_id, intent
                     FROM messages
                     WHERE recipient_id = ? AND read_at IS NULL
                     ORDER BY created_at ASC
@@ -209,7 +265,7 @@ class Store:
                     # Re-read to include read_at values in returned objects
                     rows = self._conn.execute(
                         f"""
-                        SELECT id, sender_id, recipient_id, body, metadata, created_at, read_at, sender_session_id
+                        SELECT id, sender_id, recipient_id, body, metadata, created_at, read_at, sender_session_id, intent
                         FROM messages
                         WHERE id IN ({placeholders})
                         ORDER BY created_at ASC
@@ -223,7 +279,7 @@ class Store:
         else:
             rows = self._conn.execute(
                 """
-                SELECT id, sender_id, recipient_id, body, metadata, created_at, read_at, sender_session_id
+                SELECT id, sender_id, recipient_id, body, metadata, created_at, read_at, sender_session_id, intent
                 FROM messages
                 WHERE recipient_id = ?
                 ORDER BY created_at DESC
@@ -242,6 +298,7 @@ class Store:
                 created_at=datetime.fromisoformat(r["created_at"]),
                 read_at=datetime.fromisoformat(r["read_at"]) if r["read_at"] else None,
                 sender_session_id=r["sender_session_id"],
+                intent=r["intent"],
             )
             for r in rows
         ]
@@ -280,7 +337,7 @@ class Store:
         if since_ts is None:
             rows = self._conn.execute(
                 """
-                SELECT id, sender_id, recipient_id, body, metadata, created_at, read_at, sender_session_id
+                SELECT id, sender_id, recipient_id, body, metadata, created_at, read_at, sender_session_id, intent
                 FROM messages
                 WHERE recipient_id = ?
                 ORDER BY created_at DESC
@@ -291,7 +348,7 @@ class Store:
         else:
             rows = self._conn.execute(
                 """
-                SELECT id, sender_id, recipient_id, body, metadata, created_at, read_at, sender_session_id
+                SELECT id, sender_id, recipient_id, body, metadata, created_at, read_at, sender_session_id, intent
                 FROM messages
                 WHERE recipient_id = ? AND created_at >= ?
                 ORDER BY created_at ASC
@@ -310,6 +367,7 @@ class Store:
                 created_at=datetime.fromisoformat(r["created_at"]),
                 read_at=datetime.fromisoformat(r["read_at"]) if r["read_at"] else None,
                 sender_session_id=r["sender_session_id"],
+                intent=r["intent"],
             )
             for r in rows
         ]

@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS messages (
     created_at TEXT NOT NULL,
     read_at TEXT,
     sender_session_id TEXT,
+    intent TEXT NOT NULL DEFAULT 'triage',
     FOREIGN KEY (sender_id) REFERENCES agents(id),
     FOREIGN KEY (recipient_id) REFERENCES agents(id)
 );

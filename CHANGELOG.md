@@ -4,6 +4,66 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+**Theme** — ADR-002 wake-intent coupling (v0.6.0 milestone, γ scope).
+`agent_send` gains an optional `intent` field that lets senders annotate
+messages with their delivery semantics. v1 differentiates binary wake
+behaviour — `intent="fyi"` skips the webhook wake-up so a notification
+does not spawn a full LLM session on the recipient, which was the primary
+cost driver behind the 2026-04-23 Opus auto-wake burn.
+
+### Added
+- **`agent_send(intent=...)`** — optional string parameter on the MCP
+  tool. Accepted values: `triage` (default), `execute`, `review`,
+  `question`, `fyi`. The value is stored on the message row and echoed
+  in `agent_inbox` / `agent_inbox_peek` output. Unknown values downgrade
+  to `triage` with a WARNING log (forward-compat).
+- **`messages.intent TEXT NOT NULL DEFAULT 'triage'`** — new column on
+  the SQLite schema. Migrations auto-apply for pre-v0.6 databases via
+  `ALTER TABLE ... ADD COLUMN` inside a `BEGIN IMMEDIATE` transaction
+  (same pattern as v0.5 `sender_session_id`). Pre-existing rows inherit
+  `intent = 'triage'`.
+- **`a2a_mcp_bridge.intents`** — single-purpose module exporting
+  `VALID_INTENTS`, `DEFAULT_INTENT`, `NO_WAKE_INTENTS`, `normalize_intent`,
+  and `wakes`. The enum gate lives here; the SQL column is an opaque
+  string so a future v0.7 can extend the enum without a migration.
+- **`intent` key in `agent_inbox` / `agent_inbox_peek` output** — every
+  returned message dict now carries the intent value. Backward-compat
+  for pre-ADR-002 senders: their messages surface as `intent: "triage"`
+  via the column default.
+- **8 new tests in `tests/test_intent.py`** — normalise, wakes, default
+  wake triggers, `fyi` skips wake, unknown downgrade + warning,
+  migration from pre-v0.6 schema, inbox surface, empty-intent rejection.
+
+### Changed
+- **`Store.send_message` signature** — now accepts `intent: str = "triage"`
+  kwarg. Empty string / non-string raises `INTENT_INVALID`.
+- **`tool_agent_send` return dict** — adds `"intent"` key reflecting the
+  normalised intent actually stored. Callers can use this to confirm
+  downgrade happened.
+- **`tool_agent_send` wake policy** — wake is now skipped when the
+  normalised intent is in `NO_WAKE_INTENTS` (currently `{"fyi"}`). The
+  decision is made in the tool layer so `WebhookWaker.wake()` stays
+  semantics-agnostic. Log line: `wake skipped (intent=fyi) for target=…`
+  at INFO level.
+
+### Migration
+- Pre-v0.6 databases auto-upgrade on next `Store.init_schema()` call.
+  No action required from operators.
+- Callers that pin on the shape of the `agent_inbox` message dict need
+  to accept the additional `intent` key (`test_inbox_peek` and
+  `test_session_id` were updated to match).
+
+### Notes
+- The on-the-wire wake webhook payload is unchanged for v0.6 — `intent`
+  is stored and surfaced in the inbox, but not yet forwarded to the
+  recipient gateway's webhook. That is the v0.7 hook where per-intent
+  skill dispatch lands (see ADR-002 §4.1).
+- Specialised Hermes-side skills (`a2a-task-execution`,
+  `a2a-review-request`) are tracked separately per ADR-002 §4 items 5-8.
+  v0.6 ships only the bridge-side primitive.
+
 ## [0.5.1] - 2026-04-23
 
 **Theme** — signal cleanup bugfix for `agent_inbox` + `agent_subscribe` wake-up

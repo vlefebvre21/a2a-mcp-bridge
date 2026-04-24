@@ -6,6 +6,7 @@ import logging
 import time
 from typing import Any
 
+from .intents import DEFAULT_INTENT, normalize_intent, wakes
 from .logging_ext import hash_body, log_event
 from .signals import SignalDir
 from .store import Store
@@ -26,6 +27,7 @@ def tool_agent_send(
     metadata: dict[str, Any] | None = None,
     signal_dir: SignalDir | None = None,
     waker: WebhookWaker | None = None,
+    intent: str | None = None,
 ) -> dict[str, Any]:
     """Send a message from ``caller_id`` to ``target``.
 
@@ -39,6 +41,16 @@ def tool_agent_send(
 
     Both hooks are best-effort: failures are logged but never propagated — the
     authoritative record is always the SQLite store.
+
+    ADR-002 wake-intent coupling (v0.6+):
+      The optional ``intent`` parameter annotates the message with its
+      delivery semantics (``triage``, ``execute``, ``review``, ``question``,
+      ``fyi``). Intents in ``NO_WAKE_INTENTS`` (currently just ``fyi``)
+      persist the message and touch the signal file but **skip** the webhook
+      wake-up — the recipient will see the message at the next natural
+      ``agent_inbox`` call instead of spawning a fresh LLM session. Unknown
+      values are downgraded to ``triage`` with a WARNING log, preserving
+      forward-compat as prescribed by ADR-002 §5.3.
     """
     start = time.perf_counter()
     session_id: str | None = None
@@ -47,6 +59,20 @@ def tool_agent_send(
         if isinstance(sid, str):
             session_id = sid
 
+    # Normalise intent (absent → default, unknown → downgrade + warn).
+    normalized_intent, downgraded = normalize_intent(intent)
+    if downgraded:
+        log_event(
+            logger,
+            event="tool.agent_send.intent_downgraded",
+            agent_id=caller_id,
+            level=logging.WARNING,
+            session_id=session_id,
+            target=target,
+            requested_intent=intent,
+            effective_intent=normalized_intent,
+        )
+
     store.upsert_agent(caller_id)
     try:
         result = store.send_message(
@@ -54,6 +80,7 @@ def tool_agent_send(
             recipient=target,
             body=message,
             metadata=metadata,
+            intent=normalized_intent,
         )
     except ValueError as e:
         code, _, msg = str(e).partition(":")
@@ -74,11 +101,23 @@ def tool_agent_send(
     if signal_dir is not None:
         signal_dir.notify(target)
 
+    # Wake policy (ADR-002): skip the webhook for no-wake intents (``fyi``).
+    # The message is still persisted and still signals agent_subscribe; we
+    # just don't spawn a fresh LLM session for notifications that do not
+    # require immediate action.
     if waker is not None:
-        try:
-            waker.wake(target, sender_id=caller_id)
-        except Exception as exc:  # pragma: no cover - waker must swallow, defensive
-            logger.warning("waker raised for %s: %s", target, exc)
+        if wakes(normalized_intent):
+            try:
+                waker.wake(target, sender_id=caller_id)
+            except Exception as exc:  # pragma: no cover - waker must swallow, defensive
+                logger.warning("waker raised for %s: %s", target, exc)
+        else:
+            logger.info(
+                "wake skipped (intent=%s) for target=%s from sender=%s",
+                normalized_intent,
+                target,
+                caller_id,
+            )
 
     log_event(
         logger,
@@ -88,12 +127,14 @@ def tool_agent_send(
         target=target,
         message_id=result.message_id,
         body_hash=hash_body(message),
+        intent=normalized_intent,
         duration_ms=round((time.perf_counter() - start) * 1000, 2),
     )
     return {
         "message_id": result.message_id,
         "sent_at": result.sent_at.isoformat(),
         "recipient": result.recipient,
+        "intent": normalized_intent,
     }
 
 
@@ -278,4 +319,5 @@ def _serialize_message(m: Any) -> dict[str, Any]:
         "sent_at": m.created_at.isoformat(),
         "read_at": m.read_at.isoformat() if m.read_at else None,
         "sender_session_id": m.sender_session_id,
+        "intent": getattr(m, "intent", DEFAULT_INTENT),
     }

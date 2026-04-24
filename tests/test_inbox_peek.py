@@ -154,7 +154,8 @@ class TestAgentInboxPeekPayloadShape:
         peek = tool_agent_inbox_peek(store, "bob")
         assert len(peek["messages"]) == 1
         m = peek["messages"][0]
-        # Same keys as agent_inbox's serialisation (now includes sender_session_id)
+        # Same keys as agent_inbox's serialisation (now includes
+        # sender_session_id + intent — ADR-001/002).
         assert set(m.keys()) == {
             "message_id",
             "sender",
@@ -163,6 +164,7 @@ class TestAgentInboxPeekPayloadShape:
             "sent_at",
             "read_at",
             "sender_session_id",
+            "intent",
         }
         assert m["sender"] == "alice"
         assert m["metadata"] == {"topic": "ping"}

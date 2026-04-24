@@ -1,9 +1,10 @@
 # ADR-002 — Wake-up intent is hardcoded to inbox triage
 
-- **Status:** Proposed
+- **Status:** Accepted — 2026-04-24 (Option A adopted with **Option γ v1 scope**: 5 intents declared, binary wake policy)
 - **Date:** 2026-04-23
+- **Last updated:** 2026-04-24 (decision accepted; v0.6 implementation landed)
 - **Context window:** post v0.4.4
-- **Authors:** VLBeauClaudeOpus (architect), vlefebvre21
+- **Authors:** VLBeauClaudeOpus (architect), VLBeauGLM51 (implementer), vlefebvre21
 
 ## 1. Context
 
@@ -172,9 +173,11 @@ gateway / skills:
 
 **Bridge-side (this repo)**
 
-1. **`intent` field on `agent_send`** — optional string, enum-validated
+1. **`intent` field on `agent_send`** — optional string, validated
    against a fixed list (`triage`, `execute`, `review`, `question`,
-   `fyi`). Unknown values rejected with a clear error. Default: `triage`.
+   `fyi`). Unknown values are **downgraded to `triage` with a WARNING
+   log** rather than rejected, for forward-compat with future enum
+   extensions (see §4.1 below and §5.3 resolved Q5). Default: `triage`.
 2. **Intent propagation** — `intent` stored on the message row, echoed
    in `agent_inbox` / `agent_inbox_peek` output, and included in the
    wake-up webhook payload.
@@ -207,6 +210,47 @@ at that point a queue-per-intent becomes a cleaner factoring than a
 field-per-intent. Until then, a single queue with an `intent` column is
 simpler.
 
+### 4.1 v1 scope — Option γ (landed in PR for v0.6.0)
+
+The production implementation on 2026-04-24 took the **γ variant** of
+Option A, narrowing the v1 surface for pragmatic reasons:
+
+| Aspect | v1 behaviour (landed) | v2+ deferred |
+|---|---|---|
+| Declared enum | 5 values — `triage`, `execute`, `review`, `question`, `fyi` | Same list; new values require an ADR amendment |
+| **Differentiated runtime behaviour** | **Binary — `fyi` skips the wake, all others wake** | Per-intent timeout, retry, session budget, dispatch to specialised Hermes skills |
+| Unknown values | Downgrade to `triage` + WARNING log (forward-compat — resolves §5.3 open Q5) | — |
+| Default when absent | `triage` (backward-compat — matches pre-ADR-002 behaviour exactly) | — |
+| Storage | `messages.intent TEXT NOT NULL DEFAULT 'triage'` (column is opaque-string; the enum lives in application code, not as SQL CHECK) | Could harden with a CHECK constraint once the enum is truly frozen |
+| Surface in `agent_inbox` | Yes, `intent` key in every returned message dict | — |
+| Specialised Hermes skills | **Not provided** — all wakes (regardless of intent) still hit `a2a-inbox-triage` on the recipient | `a2a-task-execution`, `a2a-review-request` (Hermes-side, tracked separately per §4 items 5-8) |
+
+Rationale for γ over the full Option A as written in §4:
+
+- **Zero skill-matrix dependency** — full Option A assumes 4-5 distinct
+  skills exist on every Hermes profile. They don't yet. Shipping the
+  bridge-side primitive without the Hermes-side skills means 4/5 values
+  would be silently degenerate (wake happens, but the `a2a-inbox-triage`
+  skill handles them all the same).
+- **Immediate budget win** — the observed cost-driver on 2026-04-23 was
+  2391 automatic wakes to Opus at ~$0.14 each. The single highest-ROI
+  change is enabling senders to mark a message as `fyi` and skip the
+  wake entirely; that alone validates the column, the enum, and the
+  inbox surface.
+- **Enum headroom preserved** — the column stores any string, and the
+  enum gate lives in `intents.py`. Extending the runtime differentiation
+  (e.g. `execute` → different skill + longer budget) is a one-commit
+  change with no migration.
+- **Forward-compat resolved** — §5.3 open Q5 ("unknown intent: reject
+  or downgrade?") is answered: downgrade to `triage` + log. Callers on
+  a newer bridge can send `execute`; older receivers downgrade it
+  invisibly to `triage` behaviour (which is the v1 default anyway).
+
+The on-the-wire JSON on the wake webhook payload is **unchanged** for
+v0.6 — the bridge currently does not yet surface `intent` to the gateway
+because no skill-dispatch logic consumes it there. That is the v0.7
+hook where Hermes-side routing lands.
+
 ## 5. Consequences
 
 ### 5.1 Positive
@@ -234,25 +278,32 @@ simpler.
   telling it to do arbitrary work). Receivers will need a small
   allowlist or downgrade policy.
 
-### 5.3 Open questions
+### 5.3 Open questions — **resolved 2026-04-24**
 
-- Where does the enum live — bridge repo, a shared schema package, or
-  documented in the README only? Leaning: **bridge repo** (it owns the
-  tool definitions).
-- Should `intent=execute` trigger a different wake-up retry policy
-  bridge-side? Leaning: **yes**, longer backoff and more attempts, on
-  the grounds that a missed task handoff is more costly than a missed
-  FYI.
-- Should the bridge expose a per-agent "accepted intents" field in
-  `agent_list` so callers can check before sending? Leaning: **v0.7**
-  — useful but not blocking. Ship the enum first, learn the mesh
-  behaviour, then codify capabilities.
-- How does `intent=execute` interact with ADR-001's gateway-mediated
-  inbox cache? Leaning: the cache stores the intent alongside the
-  message; the gateway consults the intent to decide which skill to
-  invoke when spawning the session. Both ADRs compose cleanly.
-- What does a receiver do with an unknown intent? Leaning: **downgrade
-  to triage and log a warning** rather than reject. Forward compat.
+- **Where does the enum live** — `src/a2a_mcp_bridge/intents.py`, a
+  single-purpose module exporting `VALID_INTENTS`, `DEFAULT_INTENT`,
+  `NO_WAKE_INTENTS`, `normalize_intent()`, and `wakes()`. Kept in the
+  bridge repo (option "bridge repo" from the draft) because the tool
+  definitions and the storage schema both live here. A shared schema
+  package can be extracted later if Hermes grows its own validators.
+- **Should `intent=execute` trigger a different wake-up retry policy
+  bridge-side?** — **Deferred to v0.7.** v1 (γ) only differentiates the
+  binary wake-or-skip axis. Adding per-intent retry is additive once the
+  base enum is in production.
+- **Should the bridge expose a per-agent "accepted intents" field in
+  `agent_list`?** — **Deferred to v0.7** (per the original lean). Not
+  blocking for v1.
+- **How does `intent=execute` interact with ADR-001's gateway-mediated
+  inbox cache?** — Unchanged: the cache stores the intent alongside the
+  message (the `messages.intent` column propagates into any cache
+  consumer). The gateway consults the intent when it has specialised
+  skills available; until then, the field is present but ignored by the
+  current `a2a-inbox-triage` prompt.
+- **What does a receiver do with an unknown intent?** — **Downgrade to
+  `triage` + log a WARNING.** Implemented in `intents.normalize_intent`,
+  consumed by `tool_agent_send`. Forward-compat: a v0.6 receiver can
+  process messages sent with `intent=execute` by a future v0.7 sender;
+  they just get triaged rather than executed.
 
 ## 6. References
 
