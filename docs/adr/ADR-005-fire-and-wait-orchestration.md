@@ -133,12 +133,12 @@ that creates it.
 
 **GLM-5.1** ($0.20/1M in, $0.85/1M out):
 ```
-11 × (6 000 × $0.20 + 1 000 × $0.85) / 1 000 ≈ $0.022
+11 × (6 000 × $0.20 + 1 000 × $0.85) / 1 000 000 ≈ $0.022
 ```
 
 **Opus 4.7** ($15/1M in, $75/1M out):
 ```
-11 × (6 000 × $15 + 1 000 × $75) / 1 000 ≈ $1.82
+11 × (6 000 × $15 + 1 000 × $75) / 1 000 000 ≈ $1.82
 ```
 
 **Local (Ollama):** $0.00 (but still 11× process init overhead)
@@ -155,15 +155,15 @@ that creates it.
 
 **GLM-5.1:**
 ```
-Orch: (6 000 × $0.20 + 2 000 × $0.85) / 1 000 ≈ $0.003
-Exec: (4 000 × $0.20 + 6 000 × $0.85) / 1 000 ≈ $0.006
+Orch: (6 000 × $0.20 + 2 000 × $0.85) / 1 000 000 ≈ $0.003
+Exec: (4 000 × $0.20 + 6 000 × $0.85) / 1 000 000 ≈ $0.006
 Total: ~$0.010  (÷2 vs baseline)
 ```
 
 **Opus 4.7:**
 ```
-Orch: (6 000 × $15 + 2 000 × $75) / 1 000 ≈ $0.24
-Exec: (4 000 × $15 + 6 000 × $75) / 1 000 ≈ $0.51
+Orch: (6 000 × $15 + 2 000 × $75) / 1 000 000 ≈ $0.24
+Exec: (4 000 × $15 + 6 000 × $75) / 1 000 000 ≈ $0.51
 Total: ~$0.87  (÷2 vs baseline)
 ```
 
@@ -188,11 +188,24 @@ gateway_timeout: 1800    # 30 min hard cap
 inactivity_timeout: 120  # 2 min without activity → terminates
 ```
 
-Each `agent_subscribe(55s) + message processing` counts as activity, resetting
-the inactivity timer. Effective ceiling: **`gateway_timeout: 1800`** (30 min).
+Each `agent_subscribe()` blocks up to 55 s (server-capped) before returning.
+Since 55 s < 120 s, a single subscribe call never trips the inactivity
+timer on its own. **However**, the effective ceiling on how long the
+orchestrator can wait for the next message is `inactivity_timeout: 120s`,
+not `gateway_timeout: 1800`: once a subscribe returns (either with a
+message or timed out), the clock starts again; if more than 120 s passes
+with no new activity (e.g. executor working silently), the session is
+terminated. The 30-minute `gateway_timeout` only caps the cumulative
+session lifetime across many activity-resetting events.
 
-For tasks > 30 minutes: bump `gateway_timeout`, implement skill-level heartbeat
-(`intent='fyi'` status pings every 90s), or fall back to wake-per-message.
+**Practical implication for the worker:** send an `intent='fyi'`
+heartbeat every ≤ 90 s while executing long tasks, so the orchestrator's
+subscribe keeps returning and the inactivity timer keeps resetting. Without
+heartbeats, any silent exec step > 120 s kills the orchestrator session.
+
+For tasks that genuinely need > 30 minutes wall-clock: bump
+`gateway_timeout`, keep the ≤ 90 s heartbeat discipline, or fall back to
+wake-per-message.
 
 ### 6.2 Orchestrator crash during subscribe
 
@@ -232,7 +245,8 @@ Two new Hermes skills, **no bridge changes**.
 1. Accept task brief (target, description, optional timeout).
 2. Send with `intent='execute'`.
 3. Loop on `agent_subscribe()`: process acks, results, or cancellations.
-4. On timeout (default 25 min, stays under `gateway_timeout: 1800`),
+4. On timeout (default 10 min, well under `inactivity_timeout: 120s` via
+   regular subscribe activity, and far under `gateway_timeout: 1800`),
    send cancellation and report failure.
 
 ### 8.2 `a2a-task-worker` (executor)
