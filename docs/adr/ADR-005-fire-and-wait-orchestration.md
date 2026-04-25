@@ -266,6 +266,33 @@ Two new Hermes skills, **no bridge changes**.
 Via `skill-fanout` (`devops/skill-fanout`) across all 9 profiles. No migrations,
 no breaking changes, no feature flags. Agents not using these skills are unaffected.
 
+### 8.4 Routing dependency (discovered during §9.1 E2E)
+
+`a2a-task-worker` is **not auto-invoked** by Hermes on wake-up. The gateway
+systematically loads `a2a-inbox-triage` when a webhook wake fires, regardless of
+the incoming message's `intent`. Without a routing hook, a worker brief arrives
+in a session that will ack-and-exit per the triage contract — RC#10 in action.
+
+**Fix (no bridge changes):** `a2a-inbox-triage` gets a **Step 0 — intent-aware
+routing** preamble that peeks the inbox (`agent_inbox_peek`, non-consumptive)
+before the standard triage flow. If any unread message has `intent='execute'`,
+the triage skill hands control to `a2a-task-worker` via `skill_view(name='a2a-task-worker')`
+and follows its contract instead of the conversational flow.
+
+```python
+peek = mcp_a2a_agent_inbox_peek(limit=10)
+unread = [m for m in peek['messages'] if m.get('read_at') is None]
+if any(m.get('intent') == 'execute' for m in unread):
+    # → load a2a-task-worker, run its ack→work→result→exit workflow
+    ...
+else:
+    # → proceed with normal triage
+```
+
+This Step 0 is part of the ADR-005 deliverable: the three skills form a triangle
+(`a2a-inbox-triage` → routes to → `a2a-task-worker` ← dispatched by → `a2a-task-dispatch`)
+and all three must be propagated together.
+
 ## 9. Testing
 
 ### 9.1 Happy path
@@ -279,6 +306,19 @@ Verify:
 - (3) All return messages have `intent='fyi'` (SQLite `messages` table).
 - (4) No `a2a-inbox-triage` parasite sessions on GLM side.
 - (5) File exists and runs: outputs `"fire-and-wait OK"`.
+
+#### 9.1.1 Observed behavior (live run 2026-04-25, `vlbeau-glm51` → `vlbeau-qwen36`)
+
+All five criteria passed — with three behavioural notes that do not invalidate
+the pattern but must be encoded in the skills for anyone re-running the test:
+
+| # | Observation | Encoded in |
+|---|-------------|------------|
+| 1 | The first `agent_subscribe(55)` call after `agent_send(intent='execute')` returns immediately with `{messages: [], timed_out: false}`. The sender's own `agent_send` touches the signal file, which unblocks the very next subscribe on the same side — inbox is still empty because the reply hasn't arrived yet. Second subscribe delivered the ack ~14 s later. | `a2a-task-dispatch` workflow step 2 |
+| 2 | Without §8.4 Step 0 routing, the wake-spawned session loads `a2a-inbox-triage`, reads the inbox (consumes the `execute` message), and exits without executing the task. The orchestrator's subscribe sees an empty inbox forever. Reproduced, root-caused, fixed by Step 0. | `a2a-inbox-triage` Step 0 preamble |
+| 3 | After sending the final `DONE` result, the worker session re-read its inbox via `agent_inbox()`, found stale `execute` messages from earlier test runs, and drifted into a bogus second workflow until `inactivity_timeout` killed it. Wasted tokens, no functional breakage on the orchestrator side (result already delivered). | `a2a-task-worker` step 6 + Pitfall P5 |
+
+End-to-end latency measured: fire 23:36:36 → ack 23:39:03 (~2.5 min) → result `DONE` 23:40:27 (~4 min total for a trivial brief). Qwen3.6 spends significant time reasoning between tool calls; faster models will compress this. The pattern itself is latency-agnostic.
 
 ### 9.2 Timeout path
 
