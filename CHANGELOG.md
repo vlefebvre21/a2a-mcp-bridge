@@ -22,10 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cli.py could silently fail. ([wake.py](src/a2a_mcp_bridge/wake.py))
 
 ### Hardening
-- **`intents.py` — `str.Enum` for intent values** — replaced opaque `frozenset[str]`
-  constants with a `str.Enum` class `Intent` (EXECUTE, FYI, QUESTION, REVIEW, TRIAGE).
-  `VALID_INTENTS` and `NO_WAKE_INTENTS` are derived automatically. Provides compile-time
-  type hints, forwards `.value`, and prevents typos in intent names.
+- **`intents.py` — `StrEnum` for intent values** — replaced opaque `frozenset[str]`
+  constants with a `StrEnum` class `Intent` (EXECUTE, FYI, QUESTION, REVIEW, TRIAGE).
+  `VALID_INTENTS` and `NO_WAKE_INTENTS` are derived automatically from the enum.
+  Provides compile-time type hints, forwards `.value`, and prevents typos in
+  intent names. (Python 3.11+ `enum.StrEnum`.)
 - **`_serialize_message` — proper type annotation** — signature changed from
   `m: Any` to `m: Message` and now imports `Message` directly from `models`.
   Previously lost type safety at the tool-to-dump boundary.
@@ -36,8 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   called `_profile_webhook_config()` which reads `config.yaml` +
   `webhook_subscriptions.json`, not `.env`. (~35 LOC deleted from cli.py)
 - **Deduplicated `_row_to_message`** — extracted a shared `_row_to_message(r)` helper
-  from `_add_column_if_missing` that replaces 3 × 13 lines of Message construction
-  duplicated across `read_inbox` and `peek_inbox`.
+  that replaces 3 × 13 lines of `Message` construction duplicated across
+  `read_inbox` and `peek_inbox`.
 - **`__init__.py` — published `__version__`** — added `__version__ = "0.6.0"` so the
   package is introspectable without touching `pyproject.toml`.
 
