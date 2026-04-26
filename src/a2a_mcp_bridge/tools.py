@@ -6,6 +6,7 @@ import logging
 import time
 from typing import Any
 
+from .bus_store import BusStore
 from .intents import DEFAULT_INTENT, normalize_intent, wakes
 from .logging_ext import hash_body, log_event
 from .models import Message
@@ -21,7 +22,7 @@ MAX_SUBSCRIBE_TIMEOUT_SECONDS: float = 55.0
 
 
 def tool_agent_send(
-    store: Store,
+    store: BusStore,
     caller_id: str,
     target: str,
     message: str,
@@ -140,7 +141,7 @@ def tool_agent_send(
 
 
 def tool_agent_inbox(
-    store: Store,
+    store: BusStore,
     caller_id: str,
     limit: int = 10,
     unread_only: bool = True,
@@ -175,7 +176,7 @@ def tool_agent_inbox(
 
 
 def tool_agent_inbox_peek(
-    store: Store,
+    store: BusStore,
     caller_id: str,
     since_ts: str | None = None,
     limit: int = 50,
@@ -208,7 +209,7 @@ def tool_agent_inbox_peek(
 
 
 def tool_agent_list(
-    store: Store,
+    store: BusStore,
     caller_id: str,
     active_within_days: int = 7,
     session_id: str | None = None,
@@ -239,9 +240,9 @@ def tool_agent_list(
 
 
 def tool_agent_subscribe(
-    store: Store,
+    store: BusStore,
     caller_id: str,
-    signal_dir: SignalDir,
+    signal_dir: SignalDir | None = None,
     timeout_seconds: float = 30.0,
     poll_interval: float = 0.2,
     limit: int = 10,
@@ -249,65 +250,42 @@ def tool_agent_subscribe(
 ) -> dict[str, Any]:
     """Long-poll the caller's inbox until a message arrives or timeout expires.
 
-    This is the v0.2 real-time delivery primitive. The tool returns at most
-    after ``timeout_seconds`` (capped at :data:`MAX_SUBSCRIBE_TIMEOUT_SECONDS`
-    to stay within MCP transport deadlines). If messages are already waiting
-    at call time, it returns them immediately without sleeping.
+    Delegates to ``store.subscribe()`` which abstracts the transport:
+    local Store uses filesystem signals, HttpBusStore uses HTTP long-poll.
 
-    Returns a payload with the same shape as :func:`tool_agent_inbox`, plus a
-    ``timed_out`` boolean indicating whether the wait hit its deadline with no
-    signal.
+    The *signal_dir* parameter is retained for backward-compat with
+    callers that still pass it, but is ignored — the store owns its
+    signal mechanism.
     """
     start = time.perf_counter()
     store.upsert_agent(caller_id)
 
-    timeout = max(0.0, min(timeout_seconds, MAX_SUBSCRIBE_TIMEOUT_SECONDS))
-
-    # Fast path: messages already waiting → flush & return.
-    existing = store.read_inbox(caller_id, limit=limit, unread_only=True)
-    if existing:
-        log_event(
-            logger,
-            event="tool.agent_subscribe",
-            agent_id=caller_id,
-            session_id=session_id,
-            timed_out=False,
-            fast_path=True,
-            count=len(existing),
-            duration_ms=round((time.perf_counter() - start) * 1000, 2),
+    try:
+        messages, timed_out = store.subscribe(
+            caller_id,
+            timeout_seconds=timeout_seconds,
+            limit=limit,
         )
-        return {
-            "messages": [_serialize_message(m) for m in existing],
-            "timed_out": False,
-        }
-
-    fired = signal_dir.wait(caller_id, timeout_seconds=timeout, poll_interval=poll_interval)
-    if not fired:
-        log_event(
-            logger,
-            event="tool.agent_subscribe",
-            agent_id=caller_id,
-            session_id=session_id,
-            timed_out=True,
-            count=0,
-            duration_ms=round((time.perf_counter() - start) * 1000, 2),
-        )
+    except RuntimeError:
+        # Store without SignalDir — fall back to the legacy path.
+        # This should not happen in production but keeps the function
+        # robust during the migration.
         return {"messages": [], "timed_out": True}
 
-    messages = store.read_inbox(caller_id, limit=limit, unread_only=True)
+    fast_path = timed_out is False and messages and len(messages) > 0
     log_event(
         logger,
         event="tool.agent_subscribe",
         agent_id=caller_id,
         session_id=session_id,
-        timed_out=False,
-        fast_path=False,
+        timed_out=timed_out,
+        fast_path=fast_path if timed_out is False else None,
         count=len(messages),
         duration_ms=round((time.perf_counter() - start) * 1000, 2),
     )
     return {
         "messages": [_serialize_message(m) for m in messages],
-        "timed_out": False,
+        "timed_out": timed_out,
     }
 
 

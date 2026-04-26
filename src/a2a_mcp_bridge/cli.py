@@ -52,12 +52,23 @@ def serve(
         "--agent-id",
         help="Override A2A_AGENT_ID. Required if env var not set.",
     ),
+    bus_url: str = typer.Option(
+        None,
+        "--bus-url",
+        help="HTTP façade URL (e.g. https://vps.ts.net:8443/bus). "
+        "Mutually exclusive with --db. When set, the bridge routes all "
+        "operations through the HTTP API instead of local SQLite.",
+    ),
 ) -> None:
     """Run the MCP stdio server."""
     if agent_id:
         os.environ["A2A_AGENT_ID"] = agent_id
-    os.environ["A2A_DB_PATH"] = _expand(db)
-    server_main()
+    resolved_bus_url = bus_url or os.environ.get("A2A_BUS_URL")
+    if resolved_bus_url:
+        os.environ["A2A_BUS_URL"] = resolved_bus_url
+    else:
+        os.environ["A2A_DB_PATH"] = _expand(db)
+    server_main(bus_url=resolved_bus_url)
 
 
 @app.command()

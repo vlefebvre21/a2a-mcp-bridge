@@ -19,14 +19,28 @@ from .models import (
     SendResult,
 )
 
+# Avoid circular import — signals is only needed for the type hint and
+# the optional subscribe() implementation.  The module is lightweight
+# (no heavy deps) so importing it at runtime is fine.
+from .signals import SignalDir
+
 SCHEMA_PATH: Path = Path(__file__).parent / "schema.sql"
 
 
 class Store:
-    """Thin SQLite repository. Not thread-safe; create one per process/thread."""
+    """Thin SQLite repository. Not thread-safe; create one per process/thread.
 
-    def __init__(self, db_path: str) -> None:
+    When *signal_dir* is provided, :meth:`subscribe` uses it for
+    filesystem-based long-poll (the local mono-VPS path).  When
+    *signal_dir* is ``None``, calling :meth:`subscribe` raises
+    ``RuntimeError`` — the caller should use ``HttpBusStore`` instead.
+    """
+
+    def __init__(
+        self, db_path: str, signal_dir: SignalDir | None = None
+    ) -> None:
         self.db_path = db_path
+        self._signal_dir = signal_dir
         self._conn = sqlite3.connect(db_path, isolation_level=None)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
@@ -369,3 +383,46 @@ class Store:
             ).fetchall()
 
         return [self._row_to_message(r) for r in rows]
+
+    # -- real-time (long-poll) ---------------------------------------------
+
+    _MAX_SUBSCRIBE_TIMEOUT: float = 55.0
+
+    def subscribe(
+        self,
+        agent_id: str,
+        timeout_seconds: float = 30.0,
+        limit: int = 10,
+    ) -> tuple[list[Message], bool]:
+        """Long-poll for new messages using the filesystem signal.
+
+        Returns ``(messages, timed_out)``.  Mirrors the behaviour of
+        ``tool_agent_subscribe`` in ``tools.py`` — fast-path on pending
+        messages, then block on ``SignalDir.wait()`` up to the capped
+        timeout.
+
+        Raises:
+            RuntimeError: if no ``SignalDir`` was provided at
+                construction (the local-filesystem subscribe path is
+                unavailable).
+        """
+        if self._signal_dir is None:
+            raise RuntimeError(
+                "Store.subscribe() requires a SignalDir — "
+                "pass signal_dir= at construction, or use HttpBusStore"
+            )
+
+        timeout = max(0.0, min(timeout_seconds, self._MAX_SUBSCRIBE_TIMEOUT))
+        limit = max(1, min(limit, 100))
+
+        # Fast path: messages already waiting.
+        existing = self.read_inbox(agent_id, limit=limit, unread_only=True)
+        if existing:
+            return existing, False
+
+        fired = self._signal_dir.wait(agent_id, timeout_seconds=timeout)
+        if not fired:
+            return [], True
+
+        messages = self.read_inbox(agent_id, limit=limit, unread_only=True)
+        return messages, False
