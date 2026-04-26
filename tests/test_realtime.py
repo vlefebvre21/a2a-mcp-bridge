@@ -18,8 +18,8 @@ from a2a_mcp_bridge.tools import (
 
 
 @pytest.fixture
-def store(tmp_path: Path) -> Store:
-    s = Store(str(tmp_path / "bus.sqlite"))
+def store(tmp_path: Path, signal_dir: SignalDir) -> Store:
+    s = Store(str(tmp_path / "bus.sqlite"), signal_dir=signal_dir)
     s.init_schema()
     return s
 

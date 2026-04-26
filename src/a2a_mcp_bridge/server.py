@@ -16,6 +16,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.lowlevel import NotificationOptions
 from mcp.server.stdio import stdio_server
 
+from .bus_store import BusStore
 from .signals import SignalDir
 from .store import Store
 from .tools import (
@@ -177,13 +178,21 @@ class A2AMcp(FastMCP):
             )
 
 
-def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None) -> FastMCP:
-    store = Store(db_path)
-    store.init_schema()
+def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None, bus_url: str | None = None) -> FastMCP:
+    if bus_url:
+        # ADR-006 Step 1: remote bus via HTTP façade.
+        # Import here to avoid hard dep on httpx at the top level.
+        from .bus_store import HttpBusStore
+        store: BusStore = HttpBusStore(bus_url, agent_id=agent_id)
+        signal_dir: SignalDir | None = None
+        waker: WebhookWaker | None = None
+    else:
+        sd = SignalDir(signal_dir_path or _resolve_signal_dir())
+        store = Store(db_path, signal_dir=sd)
+        store.init_schema()
+        signal_dir = sd
+        waker = _load_waker()
     store.upsert_agent(agent_id)
-
-    signal_dir = SignalDir(signal_dir_path or _resolve_signal_dir())
-    waker = _load_waker()
 
     mcp = A2AMcp("a2a-mcp-bridge")
 
@@ -381,7 +390,7 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
         return tool_agent_subscribe(
             store,
             agent_id,
-            signal_dir=signal_dir,
+            signal_dir=signal_dir,  # passed for compat; store.subscribe() owns the mechanism
             timeout_seconds=timeout_seconds,
             limit=limit,
             session_id=session_id,
@@ -412,7 +421,7 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
     return mcp
 
 
-def main() -> None:
+def main(*, bus_url: str | None = None) -> None:
     logging.basicConfig(
         level=os.environ.get("A2A_LOG_LEVEL", "INFO").upper(),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -421,13 +430,14 @@ def main() -> None:
     db_path = _resolve_db_path()
     signal_dir_path = _resolve_signal_dir()
     logger.info(
-        "starting a2a-mcp-bridge agent_id=%s db=%s signals=%s version=%s",
+        "starting a2a-mcp-bridge agent_id=%s db=%s signals=%s bus_url=%s version=%s",
         agent_id,
         db_path,
         signal_dir_path,
+        bus_url or "(local)",
         _bridge_version(),
     )
-    server = build_server(agent_id, db_path, signal_dir_path)
+    server = build_server(agent_id, db_path, signal_dir_path, bus_url=bus_url)
     server.run()
 
 
