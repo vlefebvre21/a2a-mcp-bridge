@@ -178,12 +178,12 @@ class A2AMcp(FastMCP):
             )
 
 
-def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None, bus_url: str | None = None) -> FastMCP:
+def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None, bus_url: str | None = None, bus_api_key: str | None = None) -> FastMCP:
     if bus_url:
         # ADR-006 Step 1: remote bus via HTTP façade.
         # Import here to avoid hard dep on httpx at the top level.
         from .bus_store import HttpBusStore
-        store: BusStore = HttpBusStore(bus_url, agent_id=agent_id)
+        store: BusStore = HttpBusStore(bus_url, agent_id=agent_id, api_key=bus_api_key)
         signal_dir: SignalDir | None = None
         waker: WebhookWaker | None = None
     else:
@@ -429,6 +429,7 @@ def main(*, bus_url: str | None = None) -> None:
     agent_id = _resolve_agent_id()
     db_path = _resolve_db_path()
     signal_dir_path = _resolve_signal_dir()
+    bus_api_key = os.environ.get("A2A_FACADE_API_KEY")
     logger.info(
         "starting a2a-mcp-bridge agent_id=%s db=%s signals=%s bus_url=%s version=%s",
         agent_id,
@@ -437,7 +438,10 @@ def main(*, bus_url: str | None = None) -> None:
         bus_url or "(local)",
         _bridge_version(),
     )
-    server = build_server(agent_id, db_path, signal_dir_path, bus_url=bus_url)
+    server = build_server(
+        agent_id, db_path, signal_dir_path,
+        bus_url=bus_url, bus_api_key=bus_api_key,
+    )
     server.run()
 
 
