@@ -264,6 +264,56 @@ Telegram topic, a Discord channel, etc.), that's a separate feature,
 not something the current supergroup provides. Open an issue if you'd
 like to discuss it.
 
+## Webhook routing setup
+
+Each Hermes profile receives A2A messages via a local HTTP webhook wake-up
+(see [Real-time delivery](#real-time-delivery)). When the bridge POSTs a
+wake-up, the spawned session must decide **which skill to load** based on the
+message's `intent` field — this is *intent-aware routing* (ADR-002 / ADR-005).
+
+### Intent routing rules
+
+| Message intent | Skill loaded | Pattern |
+|---|---|---|
+| `execute` | `a2a-task-worker` | Fire-and-wait: ack → execute → result (all replies with `intent=fyi`) |
+| Any other (`triage`, `question`, `review`, `fyi`, …) | `a2a-inbox-triage` | Standard inbox triage — read, assess, reply as needed |
+
+> **Mandatory.** Without intent-aware routing, an `execute` message lands in
+> `a2a-inbox-triage`, which has no execute branch and wraps up the session
+> before the task runs. Fire-and-wait orchestration fails silently.
+
+### Canonical `wake` subscription
+
+Run this on **every profile** (repeat per agent, adjusting `HERMES_HOME` and
+`<name>`):
+
+```bash
+HERMES_HOME=~/.hermes/profiles/<name> \
+  hermes webhook subscribe wake \
+  --prompt "You have been woken up by the A2A bus. Read your inbox with mcp_a2a_agent_inbox(). If any message has intent=execute, load the a2a-task-worker skill and follow its workflow (ack, execute, result — all replies with intent=fyi). Otherwise, load a2a-inbox-triage and process normally. Never wrap up prematurely on an execute message." \
+  --skills "a2a-inbox-triage" \
+  --skills "a2a-task-worker" \
+  --secret "<shared hex>" \
+  --deliver log
+```
+
+Both skills (`a2a-inbox-triage` and `a2a-task-worker`) must be enabled for the
+profile — the prompt alone cannot load a missing skill.
+
+### Prerequisites
+
+- **HMAC secret** — a 64-character hex key shared by all profiles and the
+  bridge. See [Generating the shared HMAC secret](#generating-the-shared-hmac-secret)
+  in the Deployment guide.
+- **Wake registry** — must be built (`a2a-mcp-bridge wake-registry init`) after
+  all profiles are subscribed. See [Building the wake registry](#building-the-wake-registry).
+- **Post-update verification** — after a bridge upgrade, run the
+  `hermes-post-update` skill on each profile to confirm the webhook adapter
+  and subscriptions are still intact.
+
+For the full step-by-step installation (port allocation, per-profile config,
+registry generation, rollback), see the [Deployment guide](#deployment-guide-v044).
+
 ## Deployment guide (v0.4.4+)
 
 This section is the canonical reference for running the bridge on a
