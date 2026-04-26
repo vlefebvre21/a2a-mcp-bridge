@@ -317,6 +317,8 @@ class HttpBusStore:
 
     # -- real-time ---------------------------------------------------------
 
+    _MAX_SUBSCRIBE_TIMEOUT = 55.0
+
     def subscribe(
         self,
         agent_id: str,
@@ -327,11 +329,19 @@ class HttpBusStore:
 
         Network errors return ``([], True)`` (timed out) rather than raising,
         so callers can treat a failed long-poll identically to a timeout.
+
+        ``timeout_seconds`` is capped at 55 s to match the server-side limit
+        (``MAX_SUBSCRIBE_TIMEOUT_SECONDS`` in the local Store).
         """
+        capped_timeout = min(timeout_seconds, self._MAX_SUBSCRIBE_TIMEOUT)
         try:
             resp = self._client.post(
                 self._url("/subscribe"),
-                json={"timeout_seconds": timeout_seconds, "limit": limit},
+                json={
+                    "agent_id": agent_id,
+                    "timeout_seconds": capped_timeout,
+                    "limit": limit,
+                },
             )
             resp.raise_for_status()
             data = resp.json()
