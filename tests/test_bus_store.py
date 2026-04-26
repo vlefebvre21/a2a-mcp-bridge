@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -429,7 +430,7 @@ class TestApiKeyAuth:
 
         httpx.Client.__init__ = patched_client_init  # type: ignore[assignment]
         try:
-            store = HttpBusStore(
+            HttpBusStore(
                 base_url="http://localhost:8080",
                 agent_id="test-agent",
             )
@@ -451,7 +452,7 @@ class TestApiKeyAuth:
 
         httpx.Client.__init__ = patched_client_init  # type: ignore[assignment]
         try:
-            store = HttpBusStore(
+            HttpBusStore(
                 base_url="http://localhost:8080",
                 agent_id="test-agent",
                 api_key="my-secret-key",
