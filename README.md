@@ -128,8 +128,9 @@ on POST, reading the A2A inbox via the `a2a-inbox-triage` skill):
 ```bash
 HERMES_HOME=~/.hermes/profiles/<name> \
   hermes webhook subscribe wake \
-  --prompt "You have been woken up by the A2A bus. Check your inbox." \
+  --prompt "You have been woken up by the A2A bus. Read your inbox with mcp_a2a_agent_inbox(). If any message has intent=execute, load the a2a-task-worker skill and follow its workflow (ack, execute, result — all replies with intent=fyi). Otherwise, load a2a-inbox-triage and process normally. Never wrap up prematurely on an execute message." \
   --skills "a2a-inbox-triage" \
+  --skills "a2a-task-worker" \
   --secret "<shared hex>" \
   --deliver log
 ```
@@ -139,6 +140,50 @@ profile state — the v0.4.4 format has no hand-editable fields to
 preserve. If a pre-v0.4.4 registry is found (old `wake_bot_token` or
 per-agent `bot_token` keys), a migration banner is printed and the file
 is rewritten with the new webhook payload.
+
+#### Webhook routing setup — `intent=execute` vs `intent=triage`
+
+The wake webhook's subscription prompt and skill list are **load-bearing** for
+intent-based routing (ADR-002 / ADR-005). When a peer sends a message with
+`intent=execute`, the waking session must load `a2a-task-worker` — not the
+default `a2a-inbox-triage`, which has no execute branch and will wrap up the
+session before the task runs. **This patch is a mandatory installation step**:
+without it, fire-and-wait orchestration fails silently.
+
+**Canonical `wake` subscription** (every profile, repeat per agent):
+
+```bash
+HERMES_HOME=~/.hermes/profiles/<name> \
+  hermes webhook subscribe wake \
+  --prompt "You have been woken up by the A2A bus. Read your inbox with mcp_a2a_agent_inbox(). If any message has intent=execute, load the a2a-task-worker skill and follow its workflow (ack, execute, result — all replies with intent=fyi). Otherwise, load a2a-inbox-triage and process normally. Never wrap up prematurely on an execute message." \
+  --skills "a2a-inbox-triage" \
+  --skills "a2a-task-worker" \
+  --secret "<shared hex>" \
+  --deliver log
+```
+
+**If you already have a pre-routing `webhook_subscriptions.json`** (prompt
+starting with "Check your inbox." and `skills: ["a2a-inbox-triage"]` only),
+patch it in-place on all profiles:
+
+```bash
+for p in ~/.hermes/profiles/*/webhook_subscriptions.json; do
+  python3 -c "
+import json, sys
+path = sys.argv[1]
+with open(path) as f: d = json.load(f)
+wake = d.get('wake')
+if not wake: sys.exit(0)
+wake['prompt'] = 'You have been woken up by the A2A bus. Read your inbox with mcp_a2a_agent_inbox(). If any message has intent=execute, load the a2a-task-worker skill and follow its workflow (ack, execute, result — all replies with intent=fyi). Otherwise, load a2a-inbox-triage and process normally. Never wrap up prematurely on an execute message.'
+wake['skills'] = ['a2a-inbox-triage', 'a2a-task-worker']
+with open(path, 'w') as f: json.dump(d, f, indent=2)
+print('patched:', path)
+" "$p"
+done
+```
+
+(The bridge automates this in v0.7 via `a2a-mcp-bridge webhook-setup` — see
+issue #23.)
 
 #### Migrating from v0.4.3 or earlier
 
