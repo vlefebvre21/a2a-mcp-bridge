@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -409,3 +410,54 @@ class TestClose:
     def test_close_calls_client_close(self, http_store, mock_client) -> None:
         http_store.close()
         mock_client.close.assert_called_once()
+
+
+class TestApiKeyAuth:
+    """Tests for the api_key parameter on HttpBusStore.__init__."""
+
+    def test_no_api_key_no_auth_header(self) -> None:
+        """Without api_key, no Authorization header is sent."""
+        captured: dict[str, str] = {}
+        _real_client_init = None
+
+        import httpx
+        _real_client_init = httpx.Client.__init__
+
+        def patched_client_init(self_client: httpx.Client, *args: Any, **kwargs: Any) -> None:
+            captured.update(kwargs.get("headers", {}))
+            # Don't actually connect
+            return None
+
+        httpx.Client.__init__ = patched_client_init  # type: ignore[assignment]
+        try:
+            HttpBusStore(
+                base_url="http://localhost:8080",
+                agent_id="test-agent",
+            )
+            assert "Authorization" not in captured
+            assert captured["X-Agent-Id"] == "test-agent"
+        finally:
+            httpx.Client.__init__ = _real_client_init  # type: ignore[assignment]
+
+    def test_api_key_adds_bearer_header(self) -> None:
+        """With api_key, Authorization: Bearer <key> is sent."""
+        captured: dict[str, str] = {}
+
+        import httpx
+        _real_client_init = httpx.Client.__init__
+
+        def patched_client_init(self_client: httpx.Client, *args: Any, **kwargs: Any) -> None:
+            captured.update(kwargs.get("headers", {}))
+            return None
+
+        httpx.Client.__init__ = patched_client_init  # type: ignore[assignment]
+        try:
+            HttpBusStore(
+                base_url="http://localhost:8080",
+                agent_id="test-agent",
+                api_key="my-secret-key",
+            )
+            assert captured["Authorization"] == "Bearer my-secret-key"
+            assert captured["X-Agent-Id"] == "test-agent"
+        finally:
+            httpx.Client.__init__ = _real_client_init  # type: ignore[assignment]

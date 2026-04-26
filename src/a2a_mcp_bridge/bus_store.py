@@ -176,7 +176,13 @@ class HttpBusStore:
     """HTTP client backend for ADR-006 Step 1 — routes all bus operations
     through the remote façade server."""
 
-    def __init__(self, base_url: str, agent_id: str, timeout: float = 65.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        agent_id: str,
+        timeout: float = 65.0,
+        api_key: str | None = None,
+    ) -> None:
         try:
             import httpx as _httpx
         except ImportError as exc:
@@ -189,9 +195,14 @@ class HttpBusStore:
         self._base_url = base_url.rstrip("/")
         self._agent_id = agent_id
         self._timeout = timeout
+
+        headers: dict[str, str] = {"X-Agent-Id": agent_id}
+        if api_key is not None:
+            headers["Authorization"] = f"Bearer {api_key}"
+
         self._client = _httpx.Client(
             timeout=_httpx.Timeout(timeout),
-            headers={"X-Agent-Id": agent_id},
+            headers=headers,
         )
 
     # -- helpers ------------------------------------------------------------
