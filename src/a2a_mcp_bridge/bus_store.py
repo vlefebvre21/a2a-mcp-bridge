@@ -259,7 +259,7 @@ class HttpBusStore:
             sent_at = datetime.fromisoformat(sent_at)
         return SendResult(
             message_id=data["message_id"],
-            sent_at=sent_at,  # type: ignore[arg-type]
+            sent_at=sent_at,
             recipient=data["recipient"],
         )
 

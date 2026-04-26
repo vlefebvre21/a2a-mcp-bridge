@@ -21,7 +21,7 @@ jobs:
       - name: Install uv
         run: pip install uv
       - name: Install deps
-        run: uv pip install --system -e ".[dev]"
+        run: uv pip install --system -e ".[dev,facade,remote]"
       - name: Ruff
         run: ruff check src/ tests/
       - name: Mypy

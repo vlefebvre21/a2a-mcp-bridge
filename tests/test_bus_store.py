@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -17,7 +17,6 @@ from a2a_mcp_bridge.bus_store import (
 from a2a_mcp_bridge.models import AgentRecord, Message, SendResult
 from a2a_mcp_bridge.signals import SignalDir
 from a2a_mcp_bridge.store import Store
-
 
 # ---------------------------------------------------------------------------
 # Part 1: Protocol conformance

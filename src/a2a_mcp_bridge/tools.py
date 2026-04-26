@@ -11,7 +11,6 @@ from .intents import DEFAULT_INTENT, normalize_intent, wakes
 from .logging_ext import hash_body, log_event
 from .models import Message
 from .signals import SignalDir
-from .store import Store
 from .wake import WebhookWaker
 
 logger = logging.getLogger("a2a_mcp_bridge.tools")
