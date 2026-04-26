@@ -2,7 +2,7 @@
 
 > MCP server that lets AI agents message each other — A2A-style peer-to-peer communication, exposed as MCP tools.
 
-**Status:** v0.4.4 — usable in production. Not yet published to PyPI; install from GitHub.
+**Status:** v0.5.1 — usable in production. Not yet published to PyPI; install from GitHub.
 
 > ### ⚠️ Known limitation: multi-session concurrency per profile
 >
@@ -40,18 +40,20 @@ and SQLite-backed.
 
 ## What it does
 
-Five MCP tools, all stable since v0.4:
+Six MCP tools, all stable since v0.5:
 
 | Tool | Description |
 |---|---|
 | `agent_send(target, message, metadata=None)` | Drop a message in another agent's inbox. Returns a `message_id`. Fires a real-time signal and an optional HTTP webhook wake-up toward the recipient. |
 | `agent_inbox(limit=10, unread_only=True)` | Read messages addressed to the calling agent. Atomically marks them as read when `unread_only=True`. |
+| `agent_inbox_peek(since_ts=None, limit=50)` | Read-only inbox view — no mark-as-read. Safe for concurrent sessions to inspect the inbox without consuming messages. |
 | `agent_list(active_within_days=7)` | List agents seen on the bus in the given window, with their capabilities and last-seen timestamps. |
 | `agent_subscribe(timeout_seconds=30, limit=10)` | Long-poll primitive: blocks up to `timeout_seconds` (server-capped at 55 s) waiting for new messages. Returns instantly if messages are already pending. |
 | `agent_ping()` | Returns `{"server", "version", "agent_id"}`. Useful to detect a stale stdio child after a bridge upgrade. |
 
-Backed by SQLite by default (zero-dep, single file). No authentication (trust
-the local filesystem / use it on a private machine or behind a tunnel).
+Backed by SQLite by default (zero-dep, single file). For remote/distributed
+setups, an optional HTTP facade (`serve-facade`) exposes the bus over REST —
+see [HTTP Facade (Remote Mode)](#http-facade-remote-mode) below.
 
 ## Real-time delivery
 
@@ -554,7 +556,7 @@ Same shape — point `command` at the `a2a-mcp-bridge` entry point installed by
 `uv tool install`, set a distinct `A2A_AGENT_ID` per profile, and share the
 same `A2A_DB_PATH`.
 
-Restart the client. The five tools (`agent_send`, `agent_inbox`, `agent_list`,
+Restart the client. The six tools (`agent_send`, `agent_inbox`, `agent_inbox_peek`, `agent_list`,
 `agent_subscribe`, `agent_ping`) become available. Any other MCP-capable
 agent pointed at the same `A2A_DB_PATH` (with its own `A2A_AGENT_ID`) can
 exchange messages with you.
@@ -578,10 +580,106 @@ a2a-mcp-bridge register --all --hermes-profiles ~/.hermes/profiles
 |---|---|---|
 | `A2A_AGENT_ID` | *required* | Identity this process advertises on the bus. |
 | `A2A_DB_PATH` | `./a2a-bus.sqlite` | SQLite file (shared by all agents on the bus). |
+| `A2A_BUS_URL` | *unset* | HTTP facade URL for remote mode. When set, `serve` uses `HttpBusStore` instead of local SQLite. Mutually exclusive with `A2A_DB_PATH`. |
 | `A2A_SIGNAL_DIR` | `/tmp/a2a-signals` | Directory used by `agent_subscribe` for real-time wake-ups. |
 | `A2A_WAKE_REGISTRY` | `~/.a2a-wake-registry.json` | JSON wake registry. v0.4.4+ shape: `{"wake_webhook_secret": "...", "agents": {<id>: {"wake_webhook_url": "..."}}}`. Legacy Telegram-based registries (`wake_bot_token` or per-agent `bot_token`) are detected, logged with a migration warning, and treated as "wake-up disabled" until regenerated. Missing/invalid file → feature silently disabled. |
+| `A2A_FACADE_API_KEY` | *unset* | Bearer token for facade authentication. Used by `serve-facade` to require `Authorization: Bearer <key>` on protected endpoints. |
 | `A2A_LOG_JSON` | *unset* | If set to `1` / `true` / `yes`, every tool call emits a one-object-per-line JSON log record (schema: `ts`, `level`, `event`, `agent_id`, + `session_id`/`message_id`/`target`/`duration_ms`/`body_hash`/`error_code` when applicable). Unset keeps the pre-v0.5 plain-text format. Evaluated at import time — change requires a server restart. |
 | `A2A_LOG_LEVEL` | `INFO` | Log verbosity. |
+
+## HTTP Facade (Remote Mode)
+
+Since v0.5.1 the bus can be exposed over HTTP, allowing agents on **different
+machines** to participate. The architecture is:
+
+```
+┌──────────────────────┐         ┌──────────────────────────────────────┐
+│  VPS (facade server) │         │  Remote machine (agent client)       │
+│                      │         │                                      │
+│  a2a-mcp-bridge      │  HTTP   │  a2a-mcp-bridge serve                │
+│    serve-facade      │◄───────►│    --bus-url http://VPS:8080         │
+│    :8080             │         │    --agent-id my-remote-agent        │
+│    [SQLite bus.db]   │         │                                      │
+└──────────────────────┘         └──────────────────────────────────────┘
+```
+
+### Quick start
+
+**On the server** (the machine with the SQLite database):
+
+```bash
+pip install a2a-mcp-bridge[facade]
+a2a-mcp-bridge serve-facade --host 0.0.0.0 --port 8080 --api-key my-secret-key
+```
+
+**On the remote client** (any machine with network access):
+
+```bash
+pip install a2a-mcp-bridge[remote]
+a2a-mcp-bridge serve --agent-id remote-agent --bus-url http://VPS_IP:8080
+```
+
+The remote agent uses `HttpBusStore` under the hood — all six MCP tools
+work transparently over HTTP.
+
+### REST API reference
+
+| Method | Path | Auth | Request body | Success response |
+|--------|------|------|-------------|-----------------|
+| `GET` | `/health` | No | — | `{"status": "ok", "version": "...", "agents": N}` |
+| `POST` | `/register` | Yes† | `{agent_id, metadata?}` | `{"ok": true}` |
+| `POST` | `/send` | Yes† | `{sender, recipient, body, intent?, metadata?}` | `{"message_id": "...", "sent_at": "...", "recipient": "..."}` |
+| `POST` | `/inbox` | Yes† | `{agent_id, limit?, unread_only?}` | `{"messages": [...]}` |
+| `POST` | `/inbox_peek` | Yes† | `{agent_id, limit?, since_ts?}` | `{"messages": [...]}` |
+| `POST` | `/list` | Yes† | `{active_within_days?}` | `{"agents": [...]}` |
+| `POST` | `/subscribe` | Yes† | `{agent_id, timeout_seconds?, limit?}` | `{"messages": [...], "timed_out": bool}` |
+
+† Auth required when `--api-key` is configured. Send `Authorization: Bearer <key>`.
+
+#### Request schemas (Pydantic)
+
+- **RegisterBody**: `agent_id: str`, `metadata: dict | None`
+- **SendBody**: `sender: str`, `recipient: str`, `body: str`, `intent: str | None`, `metadata: dict | None`
+- **InboxBody**: `agent_id: str`, `limit: int | None`, `unread_only: bool | None`
+- **InboxPeekBody**: `agent_id: str`, `limit: int | None`, `since_ts: str | None`
+- **ListBody**: `active_within_days: int | None`
+- **SubscribeBody**: `agent_id: str`, `timeout_seconds: int | None`, `limit: int | None`
+
+#### Error format
+
+All errors return `{"error": {"code": "...", "message": "..."}}` with an appropriate HTTP status code.
+
+| Code | HTTP | Meaning |
+|------|------|---------|
+| `TARGET_SELF` | 400 | Agent tried to send to itself |
+| `TARGET_UNKNOWN` | 404 | Recipient not registered on the bus |
+| `VALIDATION_ERROR` | 400 | Pydantic validation failed |
+| `CONFIG_ERROR` | 500 | Missing signal-dir or wake-registry |
+
+### Security considerations
+
+- **Localhost by default** — `serve-facade` binds `127.0.0.1` and refuses to
+  start on a non-local interface without `--api-key`.
+- **Bearer token auth** — when `--api-key` is set, all mutation endpoints
+  require `Authorization: Bearer <key>`. Verification uses `hmac.compare_digest`
+  (constant-time comparison).
+- **No TLS** — the facade does not terminate TLS. Put it behind a reverse
+  proxy (nginx, Caddy) with HTTPS for production use, or use an SSH tunnel /
+  WireGuard.
+- **Webhook wake-up** — the facade forwards wake-up webhooks to the wake
+  registry, best-effort. Failures are logged and never block the response.
+
+### `HttpBusStore` client
+
+The `HttpBusStore` class (`bus_store.py`) implements the `BusStore` protocol
+using `httpx`. It is used automatically when `--bus-url` is passed to `serve`.
+
+Key behaviours:
+- Sends `X-Agent-Id` header on every request.
+- Lazy-imports `httpx` — clear error message if missing.
+- Network errors: `upsert_agent` best-effort (warns), reads return `[]`,
+  `subscribe` returns `([], True)`, `send_message` raises `ValueError`.
+- `close()` terminates the httpx client.
 
 ## Multi-session concurrency (ADR-001) & MCP docstring visibility
 
@@ -631,13 +729,26 @@ out-of-band from business input.
 ## CLI reference
 
 ```
-a2a-mcp-bridge serve              # run the MCP stdio server
+a2a-mcp-bridge serve              # run the MCP stdio server (local SQLite)
+a2a-mcp-bridge serve --bus-url URL # run MCP stdio server against a remote facade
+a2a-mcp-bridge serve-facade [...]  # run the HTTP facade server (FastAPI + uvicorn)
 a2a-mcp-bridge init               # initialize the SQLite schema
 a2a-mcp-bridge register [...]     # pre-register one or all agents
 a2a-mcp-bridge agents list        # show agents seen on the bus
 a2a-mcp-bridge messages tail      # tail recent messages
 a2a-mcp-bridge wake-registry init # build the webhook wake registry from ~/.hermes
 ```
+
+### `serve-facade` options
+
+| Option | Default | Description |
+|---|---|---|
+| `--db` | `~/.a2a-bus.sqlite` | SQLite database path. |
+| `--host` | `127.0.0.1` | Bind address. Non-local values require `--api-key`. |
+| `--port` | `8080` | Listen port. |
+| `--api-key` / `A2A_FACADE_API_KEY` | *unset* | Bearer token for authentication. Required if `--host` is not `127.0.0.1` / `localhost`. |
+| `--signal-dir` / `A2A_SIGNAL_DIR` | `/tmp/a2a-signals` | Signal directory for `subscribe` wake-ups. |
+| `--wake-registry` / `A2A_WAKE_REGISTRY` | `~/.a2a-wake-registry.json` | Webhook wake registry path. |
 
 ## Roadmap
 
@@ -676,14 +787,24 @@ Planned:
   tool docstrings. Paired with Hermes-side gateway cache work (tracked
   separately) that makes the gateway the sole bus subscriber per
   profile. Plus observability (per-tool stats, structured JSON logs).
-- **Later** — Agent Cards (A2A-compliant metadata), HTTP A2A endpoint in front
+- **v0.5.1** — HTTP facade server (`serve-facade`) + `HttpBusStore` client.
+  Exposes the SQLite bus over REST (FastAPI) so agents on remote machines
+  can participate. Optional Bearer token auth, Pydantic validation,
+  async subscribe, webhook wake-up forwarding.
+  See [ADR-006.1](docs/adr/ADR-006.1-http-bus-facade.md).
+
+Planned:
+
+- **Later** — Agent Cards (A2A-compliant metadata),
   of the MCP server, allowlist + token-based auth, optional Redis / Postgres
   backend for multi-host deployments, `agent_reply` + threaded conversations.
 
 ## Project ethos
 
-- **Minimal.** No framework lock-in. Pure MCP + stdlib + SQLite. Zero new
-  runtime deps added since v0.1 (wake-up uses `urllib.request`).
+- **Minimal.** No framework lock-in. Pure MCP + stdlib + SQLite. The only
+  runtime deps added since v0.1 are optional (`httpx` for remote mode,
+  `fastapi` + `uvicorn` for the facade — both behind `[remote]` / `[facade]`
+  extras). Wake-up uses `urllib.request`.
 - **Standards-first.** When A2A defines a primitive, we map to it. No NIH.
 - **Multi-agent, multi-host.** Designed for the case where you run 2+ AI
   agents across different machines / profiles and want them to coordinate.
@@ -701,9 +822,17 @@ cd a2a-mcp-bridge
 uv venv && source .venv/bin/activate
 uv pip install -e ".[dev]"
 
-pytest -q              # 111 tests, ≥85% coverage gate
+pytest -q              # 209 tests, ≥85% coverage gate
 ruff check src/ tests/ # lint
 mypy src/              # strict type-check
+```
+
+### Optional dependency groups
+
+```bash
+pip install a2a-mcp-bridge[facade]   # FastAPI + uvicorn + httpx (run the facade server)
+pip install a2a-mcp-bridge[remote]   # httpx only (connect to a remote facade)
+pip install a2a-mcp-bridge[dev]      # pytest, ruff, mypy, etc.
 ```
 
 See [docs/spec/v0.1.md](./docs/spec/v0.1.md) for the original contract and

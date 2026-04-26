@@ -6,6 +6,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — HTTP Facade (v0.5.1)
+
+- **`facade.py` — FastAPI HTTP façade server** — exposes the SQLite bus over
+  REST so agents on remote machines can participate. Factory function
+  `create_app(db_path, api_key?, signal_dir?, waker?)` returns a fully
+  configured FastAPI application. Seven endpoints: `GET /health`,
+  `POST /register`, `POST /send`, `POST /inbox`, `POST /inbox_peek`,
+  `POST /list`, `POST /subscribe`. All mutation endpoints require Bearer
+  token auth when `--api-key` is configured. Pydantic models for request
+  validation with a custom `RequestValidationError` handler that returns
+  uniform `{"error": {"code": "VALIDATION_ERROR", "message": "..."}}` envelopes.
+  `subscribe` uses `anyio.to_thread.run_sync` to offload the blocking
+  `Store.subscribe()` call while keeping `request.json()` async.
+  ([facade.py](src/a2a_mcp_bridge/facade.py))
+- **`bus_store.py` — `BusStore` Protocol + `HttpBusStore` client** —
+  `BusStore` is a runtime-checkable `Protocol` defining the shared interface
+  between `Store` (SQLite) and `HttpBusStore` (HTTP). `HttpBusStore` connects
+  to a running facade via `httpx`, sending `X-Agent-Id` on every request.
+  Lazy-imports `httpx` with a clear install hint. Network errors are handled
+  gracefully: reads return `[]`, `subscribe` returns `([], True)`,
+  `send_message` raises `ValueError`, `upsert_agent` best-effort (warns).
+  ([bus_store.py](src/a2a_mcp_bridge/bus_store.py))
+- **`serve-facade` CLI command** — starts the HTTP facade server via uvicorn.
+  Options: `--db`, `--host` (default `127.0.0.1`), `--port` (default `8080`),
+  `--api-key` (or `A2A_FACADE_API_KEY`), `--signal-dir`, `--wake-registry`.
+  Refuses to start on a non-local interface without `--api-key` for safety.
+  ([cli.py](src/a2a_mcp_bridge/cli.py))
+- **`--bus-url` option on `serve` command** — when provided, the MCP stdio
+  server uses `HttpBusStore` instead of local SQLite, enabling transparent
+  remote mode. Env var: `A2A_BUS_URL`.
+  ([cli.py](src/a2a_mcp_bridge/cli.py), [server.py](src/a2a_mcp_bridge/server.py))
+- **`[facade]` and `[remote]` optional dependency groups** in `pyproject.toml`:
+  `pip install a2a-mcp-bridge[facade]` (FastAPI + uvicorn + httpx) for running
+  the facade server; `pip install a2a-mcp-bridge[remote]` (httpx only) for
+  connecting to one.
+  ([pyproject.toml](pyproject.toml))
+
 ### Security
 - **`Store._add_column_if_missing` — SQL injection guard** — table names are now
   validated against a whitelist (`"agents" | "messages"`). Arbitrary table names via
