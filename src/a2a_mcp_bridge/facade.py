@@ -227,7 +227,11 @@ def create_app(
     mount this app at ``/bus`` if desired.
     """
     store = Store(db_path, signal_dir=signal_dir, check_same_thread=False)
-    store.init_schema()
+    try:
+        store.init_schema()
+    except Exception:
+        store.close()
+        raise
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):  # type: ignore[override]
@@ -259,6 +263,10 @@ def create_app(
     async def health() -> JSONResponse:
         agent_count = len(store.list_agents())
         return JSONResponse({"status": "ok", "version": __version__, "agents": agent_count})
+
+    @app.get("/ping")
+    async def ping() -> JSONResponse:
+        return JSONResponse({"server": "a2a-mcp-bridge", "version": __version__})
 
     @app.post("/register")
     async def register(request: Request, body: RegisterBody) -> JSONResponse:

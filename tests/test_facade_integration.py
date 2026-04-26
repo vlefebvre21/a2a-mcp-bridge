@@ -10,7 +10,6 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-import tempfile
 import time
 
 import httpx
@@ -26,8 +25,6 @@ _FACADE_PORT = 18766  # high port to avoid collisions
 @pytest.fixture(scope="module")
 def facade_server():
     """Start a real uvicorn subprocess for the duration of the module."""
-    tmpdir = tempfile.mkdtemp()
-    os.path.join(tmpdir, "facade_test.db")
 
     proc = subprocess.Popen(
         [

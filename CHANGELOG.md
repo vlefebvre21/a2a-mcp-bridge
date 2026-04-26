@@ -11,9 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`facade.py` — FastAPI HTTP façade server** — exposes the SQLite bus over
   REST so agents on remote machines can participate. Factory function
   `create_app(db_path, api_key?, signal_dir?, waker?)` returns a fully
-  configured FastAPI application. Seven endpoints: `GET /health`,
-  `POST /register`, `POST /send`, `POST /inbox`, `POST /inbox_peek`,
-  `POST /list`, `POST /subscribe`. All mutation endpoints require Bearer
+  configured FastAPI application. Eight endpoints: `GET /health`,
+  `GET /ping`, `POST /register`, `POST /send`, `POST /inbox`,
+  `POST /inbox_peek`, `POST /list`, `POST /subscribe`. All mutation endpoints require Bearer
   token auth when `--api-key` is configured. Pydantic models for request
   validation with a custom `RequestValidationError` handler that returns
   uniform `{"error": {"code": "VALIDATION_ERROR", "message": "..."}}` envelopes.

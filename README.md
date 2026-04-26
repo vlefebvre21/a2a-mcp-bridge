@@ -627,6 +627,7 @@ work transparently over HTTP.
 | Method | Path | Auth | Request body | Success response |
 |--------|------|------|-------------|-----------------|
 | `GET` | `/health` | No | — | `{"status": "ok", "version": "...", "agents": N}` |
+| `GET` | `/ping` | No | — | `{"server": "a2a-mcp-bridge", "version": "..."}` |
 | `POST` | `/register` | Yes† | `{agent_id, metadata?}` | `{"ok": true}` |
 | `POST` | `/send` | Yes† | `{sender, recipient, body, intent?, metadata?}` | `{"message_id": "...", "sent_at": "...", "recipient": "..."}` |
 | `POST` | `/inbox` | Yes† | `{agent_id, limit?, unread_only?}` | `{"messages": [...]}` |
