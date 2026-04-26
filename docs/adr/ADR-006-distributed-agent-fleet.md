@@ -19,35 +19,41 @@ endpoints.
 ### 1.1 Current state — mono-VPS
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│  Hetzner VPS (Ubuntu 24.04, 8 GB RAM) — single node              │
-│                                                                  │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐        ┌──────────────┐  │
-│  │ gateway  │ │ gateway  │ │ gateway  │  ...   │ gateway      │  │
-│  │ opus :P1 │ │ sonnet46 │ │ gemini   │        │ magent   :P9 │  │
-│  │   :P1/wake│ │  :P2:8099│ │glm51:8100│        │              │  │
-│  └────┬─────┘ └────┬─────┘ └────┬─────┘        └──────┬───────┘  │
-│       │            │            │                      │          │
-│       └────────────┴────────────┴────────────┬─────────┘          │
-│                                              │                    │
-│                               ┌──────────────▼──────┐             │
-│                               │  A2A SQLite Bus       │             │
-│                               │  ~/.a2a-bus.sqlite    │             │
-│                               │  (WAL, single-writer) │             │
-│                               └──────────────────────┘             │
-│                                                                    │
-│  ┌──────────────────────────────┐                                  │
-│  │  Reverse SSH Tunnel           │                                  │
-│  │  Mac ⟵──ssh -R─── VPS        │                                  │
-│  │  localhost:9001 ⟶ Mac:8008   │                                  │
-│  │  (vlbeau-qwen36 inference)   │                                  │
-│  └──────────────────────────────┘                                  │
-└────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│  Hetzner VPS (Ubuntu 24.04, 8 GB RAM) — single node                      │
+│                                                                          │
+│  9 Hermes gateways, each binding 127.0.0.1:<port>/webhooks/wake          │
+│    main     :8651    opus     :8652    glm51    :8653                    │
+│    gemini   :8654    heavy    :8655    mistral  :8656                    │
+│    qwen36   :8657    magent   :8658    deepseek :8650                    │
+│                                                                          │
+│             │     │     │     │     │     │     │     │     │            │
+│             └─────┴─────┴─────┴──┬──┴─────┴─────┴─────┴─────┘            │
+│                                  │                                       │
+│                    ┌─────────────▼────────────┐                          │
+│                    │  a2a-mcp-bridge serve    │                          │
+│                    │  --db ~/.a2a-bus.sqlite  │                          │
+│                    │  (WAL, single-writer)    │                          │
+│                    └──────────────────────────┘                          │
+│                                                                          │
+│  ┌──────────────────────────────────────────────┐                        │
+│  │  Reverse SSH Tunnel (persistent, autossh)    │                        │
+│  │  Mac (LAN) ⟵──ssh -R 11434:127.0.0.1:11434── VPS                    │
+│  │  vlbeau-qwen36 on VPS calls 127.0.0.1:11434  │                        │
+│  │  → proxied through SSH to Mac's Ollama       │                        │
+│  │  (Qwen 3.6 inference, MPS backend)           │                        │
+│  └──────────────────────────────────────────────┘                        │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
-The Qwen 3.6 model runs on a Mac (local, MPS, 24 GB+ VRAM), reached via a
-reverse SSH tunnel. The `vlbeau-qwen36` gateway on the VPS calls
-`http://localhost:9001`, which is proxified to `Mac:8008`.
+The Qwen 3.6 model is served by **Ollama** on a Mac (LAN, MPS backend),
+reached via a reverse SSH tunnel. The `vlbeau-qwen36` gateway on the VPS
+calls `http://127.0.0.1:11434` (Ollama's default port), which is tunneled
+to the Mac's local Ollama instance. The tunnel is kept alive by `autossh`.
+
+All 9 gateways share the single SQLite bus file through `a2a-mcp-bridge
+serve`, which multiplexes MCP stdio clients over one database handle (WAL
+mode, single-writer — see ADR-001).
 
 ### 1.2 Why distribute now
 
@@ -109,6 +115,18 @@ semantics (single logical writer, atomic mark-as-read, replay via
 **Recommendation:** Option A for Step 1 (Mac as first remote node),
 Option B as long-term target if N > 3 or API latency proves problematic.
 
+**Schema conformance (binding constraint):** the HTTP API façade MUST
+expose the exact SQLite schema defined by ADR-001 and the current bridge
+migrations — tables `messages`, `agents`, `wake_registry` (or their
+successors), with columns `sender_id`, `recipient_id`, `intent`,
+`metadata`, `session_id`, `created_at`, `read_at`, `id`. The façade is a
+**thin transport adapter**, not a reinterpretation of the bus semantics.
+Any deviation from the schema breaks ADR-001 invariants (atomic
+mark-as-read, `since_ts` replay ordering) and invalidates fire-and-wait
+(ADR-005). Option B (Postgres) faces the same constraint: a migration
+DDL must preserve column names, types, and uniqueness constraints
+1:1 (only the storage engine changes).
+
 Rationale:
 - Our current message volume (~tens per hour) makes Option C's scalability
   benefits irrelevant. NATS JetStream adds operational complexity without
@@ -144,6 +162,26 @@ IP).
 **Recommendation:** Option B (long-poll via `agent_subscribe`) as default
 for NAT-ed nodes. Option A (reverse SSH tunnel) as opt-in for
 latency-sensitive agents requiring < 1 s wake.
+
+**Clarification — latency budgets (important):** the `≤ 55 s` figure
+above covers **only the wake-delivery cycle** — the time between a
+sender's `agent_send(intent='execute')` and the receiver unblocking from
+its `agent_subscribe()` loop. End-to-end task latency has additional
+components that must be accounted for separately:
+
+| Phase | Contribution | Typical range |
+|-------|--------------|---------------|
+| 1. Wake delivery (long-poll) | Poll-cycle worst-case | 0 – 55 s |
+| 2. Session spawn + skill load | Hermes cold start | 1 – 3 s |
+| 3. Model inference (LLM) | Tokens generated × TPS | 5 – 60+ s |
+| 4. Tool calls during execution | Variable, task-dependent | 0 – minutes |
+| 5. Reply delivery (`intent=fyi`) | Bus write + opposite subscribe | 0 – 55 s |
+
+Empirically, fire-and-wait tests measured **T+72 s** (early Qwen test, cold
+cache) and **T+17 s** (warm cache) for a full round-trip. The wake
+sub-component was bounded by 55 s in both cases; the rest came from model
+inference and tool execution. When reasoning about user-perceived latency,
+budget all five phases — not just wake delivery.
 
 Rationale:
 - `agent_subscribe(timeout=55s)` is already the primary blocking primitive
@@ -187,7 +225,8 @@ node.
 | `image_generate` (SD) | N/A | Partial (MPS) | Native | No — requires local GPU + model weights |
 | `LLM inference` (vllm, llama.cpp) | N/A (no GPU) | Native (MPS, high VRAM) | Native (CUDA) | No — requires local model inference |
 | `delegate_task` (spawn subagent) | Native | Native | Native | No — subagent inherits parent's node |
-| `a2a` tools (agent_send, inbox, ping) | Cross-node via bus | Cross-node via bus | Cross-node via bus | **Natively cross-node** |
+| `a2a` tools (agent_send, inbox, ping) | Via local bus handle | Via bus API (façade) | Via bus API (façade) | **Natively cross-node via the bus** |
+| `a2a-mcp-bridge` runtime (the bus itself) | **Runs here (owner)** | Client only (bus adapter) | Client only (bus adapter) | The bus is singular by definition — only one node hosts it |
 | `webhook` / `send_message` (Telegram/Discord) | Native (public IP) | NAT-ed (needs tunnel) | Ephemeral IP | Partial — needs persistent endpoint |
 
 ### 5.2 Home node concept
@@ -259,12 +298,17 @@ Today, `agent_id` is purely declarative — any process can claim to be
 `vlbeau-opus` and call `agent_send` or `agent_inbox`. This was acceptable
 on localhost. On a multi-node bus, it is not.
 
-**Proposed (future ADR):** embed a gateway-signed token in every
-`agent_send` and `agent_inbox` call. The bus adapter validates the token
-against a registry of known gateway public keys.
+**Proposed (out of scope for this ADR — deferred to a future ADR):**
+embed a gateway-signed token in every `agent_send` and `agent_inbox`
+call. The bus adapter validates the token against a registry of known
+gateway public keys.
 
-Grace period: tolerate unsigned calls for 30 days after rollout, logging
-a `WARN` for each. After grace period, reject unsigned calls.
+This is **not committed** as part of ADR-006. The JWT scheme, key
+distribution mechanism, grace-period policy, and rejection criteria
+will be specified in a dedicated security ADR once the fleet topology
+of Steps 1–2 is observed in practice. Until then, Tailscale-level mTLS
+(§6.1) and trust-domain rules (§6.4) provide the operational security
+envelope.
 
 ### 6.4 Trust domains
 
@@ -290,31 +334,37 @@ VPS-only, Qwen inference via reverse SSH tunnel. No changes.
 ### 7.2 Step 1 — Mac as first remote node
 
 **Prerequisites:**
-- Deploy `a2a-mcp-bridge` binary on Mac (macOS ARM64).
-- Configure Hermes gateway with profile `vlbeau-qwen36`, `home_node: mac-lan`.
-- Deploy HTTP API façade on VPS (wraps SQLite bus).
-- Mac connects to bus API via Tailscale.
+- **Tailscale installed and joined** to Vincent's tailnet on both VPS and Mac (free tier, ≤ 20 devices).
+- **Python 3.12+** available on Mac (macOS ARM64). `a2a-mcp-bridge` is distributed as a **Python package via pip** (`pip install a2a-mcp-bridge`), not a standalone binary. No compiled binary exists for macOS ARM64; we rely on CPython wheels.
+- **Hermes agent** installed on Mac (same `hermes-agent` codebase, pip-installable) with a `qwen36` profile directory under `~/.hermes/profiles/qwen36/`.
+- **Webhook subscriptions file** (`webhook_subscriptions.json`) populated on the Mac profile so intent routing works: `intent=execute` → `a2a-task-worker`, others → `a2a-inbox-triage`. See the `devops/a2a-webhook-routing` skill and run `devops/hermes-post-update` audit script before first task dispatch.
+- **Ollama already running** on Mac (`127.0.0.1:11434`) with the Qwen 3.6 model pulled. The SSH tunnel becomes optional once the bus itself is reachable via Tailscale.
+- **Systemd user service** (VPS side) or `launchd` plist (Mac side) managing the gateway lifecycle so `vlbeau-gateways restart qwen36` works from either host.
 
-**Scope of change:**
-- **Code:** `a2a-mcp-bridge` — new `--bus-url` flag to point to remote bus API instead of local SQLite path. SQLite read path unchanged (façade proxies it).
-- **Config:** Mac gateway config sets `bus_url: https://vps-hetzner:8443/bus` and `wake_mode: long_poll`.
-- **Skills:** No changes to skills. ADR-001/002/005 contracts hold as-is.
+**Scope of change — code (bridge):**
+- **New flag `--bus-url` on `a2a-mcp-bridge serve`** (PR required). Today the bridge accepts `--db <sqlite-path>`; Step 1 adds an alternative `--bus-url https://<host>:<port>/bus` that switches the storage layer from direct SQLite to an HTTP client of the façade. Mutually exclusive with `--db`.
+- **New binary `a2a-mcp-bridge-facade`** (PR required). Runs on VPS, owns the SQLite file, exposes a REST/JSON-RPC API matching the schema constraint of §3.2. Binds on the Tailscale interface only (not the public internet).
+- **Estimated effort:** ~2–3 days for a minimum-viable façade + client, including integration tests against existing ADR-001/002/005 contracts. The façade surface area is small (≤ 10 endpoints: `send`, `inbox`, `inbox_peek`, `subscribe`, `list`, `ping`, `signal_touch`).
 
-**Wake delivery:** `agent_subscribe(timeout=55s)` long-poll loop.
+**Scope of change — config:**
+- Mac gateway config sets `bus_url: https://vps-hetzner.tailnet-xxxx.ts.net:8443/bus` and `wake_mode: long_poll`.
+- VPS profiles remain on `--db` (unchanged) — the façade reads from the same SQLite file they write to, they do not go through the façade themselves.
+
+**Scope of change — skills:** No changes to existing skills. ADR-001/002/005 contracts hold as-is.
+
+**Wake delivery:** `agent_subscribe(timeout=55s)` long-poll loop on the Mac side.
 
 **Success criteria:**
-1. `agent_send("vlbeau-qwen36", intent='execute', ...)` from `vlbeau-opus`
-   on VPS triggers a wake on Mac within ≤ 55 s.
+1. `agent_send("vlbeau-qwen36", intent='execute', ...)` from `vlbeau-opus` on VPS triggers a wake on Mac within ≤ 55 s (wake cycle alone — total round-trip budget per §4.2 latency table).
 2. Mac agent executes task, sends reply via `intent='fyi'` back through bus.
 3. Opus receives reply in its `agent_subscribe()` loop.
-4. End-to-end wall clock < 10 s (excluding model inference time).
+4. End-to-end round-trip < 30 s p95 on warm cache (Qwen inference dominates).
 5. No changes to ADR-001/002/005 contracts.
+6. `devops/hermes-post-update` audit passes clean on Mac profile.
 
-**Rollback:** Revert Qwen gateway to VPS config (localhost tunnel). Single
-config flag change.
+**Rollback:** Revert Mac `qwen36` gateway to VPS (localhost tunnel to Ollama). Single config flag change. The bus façade stays deployed on VPS (harmless when nobody connects).
 
-**Observability:** Log `bus_api_latency_ms` on each `agent_send` /
-`agent_inbox`. Alert if p99 > 50 ms.
+**Observability:** Log `bus_api_latency_ms` on each `agent_send` / `agent_inbox` from Mac side. Alert if p99 > 50 ms over 5 min. Log Tailscale tunnel state to distinguish network vs application latency.
 
 ### 7.3 Step 2 — N-node generalization
 
@@ -408,7 +458,6 @@ not synchronous conversation.
 | 3 | **Offline message expiry** — when a message is sent to an agent whose node is down, should it persist indefinitely (current SQLite behavior) or acquire a TTL? | Storage growth and stale message handling. | Bridge |
 | 4 | **ADR-003 worktree isolation** — if the same profile has two instances on two nodes, do git identity and working tree races occur? The current ADR-003 assumes one profile = one worktree. | Worktree integrity. | Skills / Config |
 | 5 | **Secret rotation** — how to rotate bus API keys across nodes without downtime? | Operational security. | Infrastructure |
-| 6 | **Cross-node signal file** — the `A2A_SIGNAL_DIR` mechanism (ADR-005) only works on a shared filesystem. How does a remote node trigger wake on the VPS? | Already addressed: long-poll replaces signal file on remote nodes. | Confirmed: long-poll (§4.2) |
 
 ## 11. References
 
@@ -416,6 +465,8 @@ not synchronous conversation.
 - **[ADR-002](./ADR-002-wake-intent-coupling.md)** — Intent enum, `intent=fyi` skips wake webhook, binary wake axis.
 - **[ADR-003](./ADR-003-worktree-isolation-and-git-identity.md)** — Worktree isolation and git identity (referenced in §10, question 4).
 - **[ADR-005](./ADR-005-fire-and-wait-orchestration.md)** — Fire-and-wait orchestration, `agent_subscribe` long-poll pattern.
+- **Hermes skill `devops/hermes-post-update`** — verification and correction protocol after Hermes upgrade or new profile deployment (prerequisite for Step 1, §7.2).
+- **Hermes skill `devops/a2a-webhook-routing`** — maintain `webhook_subscriptions.json` so intent routing (`execute` → `a2a-task-worker`, others → `a2a-inbox-triage`) is correct on every profile, including new remote nodes.
 - **NATS JetStream docs** — <https://docs.nats.io/nats-concepts/jetstream> (referenced for Option 3C comparison).
 - **Tailscale** — <https://tailscale.com> (recommended for inter-node mesh networking).
 - **WireGuard** — <https://www.wireguard.com> (alternative to Tailscale).
