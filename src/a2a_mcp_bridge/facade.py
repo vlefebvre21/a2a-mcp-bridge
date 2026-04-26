@@ -100,7 +100,13 @@ def send_handler(
         message = body["body"]
         intent = body.get("intent", "triage")
         metadata = body.get("metadata")
+    except KeyError as exc:
+        return JSONResponse(
+            {"error": {"code": "VALIDATION_ERROR", "message": f"Missing required field: {exc}"}},
+            status_code=400,
+        )
 
+    try:
         result = store.send_message(
             sender, recipient, message, metadata, intent
         )
@@ -176,7 +182,13 @@ def subscribe_handler(
     agent_id = body["agent_id"]
     timeout_seconds = min(body.get("timeout_seconds", 30.0), 55.0)
     limit = body.get("limit", 10)
-    messages, timed_out = store.subscribe(agent_id, timeout_seconds, limit)
+    try:
+        messages, timed_out = store.subscribe(agent_id, timeout_seconds, limit)
+    except RuntimeError as exc:
+        return JSONResponse(
+            {"error": {"code": "CONFIG_ERROR", "message": str(exc)}},
+            status_code=500,
+        )
     serialised = [_serialise_message(m) for m in messages]
     return JSONResponse({"messages": serialised, "timed_out": timed_out})
 
@@ -196,11 +208,11 @@ def create_app(
     This is the factory function used by both the CLI *serve* action
     (production) and the test suite (testing).
     """
-    store = Store(db_path, signal_dir=signal_dir)
+    store = Store(db_path, signal_dir=signal_dir, check_same_thread=False)
+    store.init_schema()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):  # type: ignore[override]
-        store.init_schema()
         yield
         store.close()
 

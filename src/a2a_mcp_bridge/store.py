@@ -37,11 +37,15 @@ class Store:
     """
 
     def __init__(
-        self, db_path: str, signal_dir: SignalDir | None = None
+        self, db_path: str, signal_dir: SignalDir | None = None,
+        *, check_same_thread: bool = True,
     ) -> None:
         self.db_path = db_path
         self._signal_dir = signal_dir
-        self._conn = sqlite3.connect(db_path, isolation_level=None)
+        self._conn = sqlite3.connect(
+            db_path, isolation_level=None,
+            check_same_thread=check_same_thread,
+        )
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.execute("PRAGMA journal_mode = WAL")
