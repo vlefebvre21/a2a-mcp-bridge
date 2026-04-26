@@ -112,6 +112,16 @@ def serve_facade(
     (e.g. HttpBusStore clients).  This is the production counterpart to
     the MCP stdio ``serve`` command.
     """
+    # Safety guard: refuse to start on a non-local interface without auth.
+    local_hosts = {"127.0.0.1", "::1", "localhost"}
+    if host not in local_hosts and not api_key:
+        console.print(
+            "[red]error:[/red] --api-key is required when binding to a "
+            f"non-local address ({host}). Use --host 127.0.0.1 for local-only "
+            "or set --api-key / A2A_FACADE_API_KEY."
+        )
+        raise typer.Exit(code=2)
+
     import uvicorn
 
     from .facade import create_app

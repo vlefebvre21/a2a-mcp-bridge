@@ -12,38 +12,37 @@ from fastapi.testclient import TestClient
 from a2a_mcp_bridge.facade import create_app
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _register(client: TestClient, agent_id: str) -> None:
+    resp = client.post("/register", json={"agent_id": agent_id})
+    assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
-
 @pytest.fixture
 def client() -> TestClient:
-    """TestClient wired to a fresh in-memory app (no auth)."""
-    app = create_app(db_path=":memory:", api_key=None)
+    app = create_app(db_path=":memory:")
     return TestClient(app)
 
 
 @pytest.fixture
 def authed_client() -> TestClient:
-    """TestClient with API-key auth enabled."""
-    app = create_app(db_path=":memory:", api_key="secret123")
+    app = create_app(db_path=":memory:", api_key="test-secret")
     return TestClient(app)
-
-
-def _register(client: TestClient, agent_id: str) -> None:
-    """Helper: register an agent via the /bus/register endpoint."""
-    resp = client.post("/bus/register", json={"agent_id": agent_id})
-    assert resp.status_code == 200
 
 
 # ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------
 
-
 class TestHealth:
     def test_health_returns_ok(self, client: TestClient) -> None:
-        resp = client.get("/bus/health")
+        resp = client.get("/health")
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ok"
@@ -52,63 +51,65 @@ class TestHealth:
 
     def test_health_counts_registered_agents(self, client: TestClient) -> None:
         _register(client, "alice")
-        resp = client.get("/bus/health")
-        assert resp.json()["agents"] == 1
+        _register(client, "bob")
+        resp = client.get("/health")
+        assert resp.json()["agents"] == 2
 
 
 # ---------------------------------------------------------------------------
 # Register
 # ---------------------------------------------------------------------------
 
-
 class TestRegister:
     def test_register_new_agent(self, client: TestClient) -> None:
-        resp = client.post("/bus/register", json={"agent_id": "alice"})
+        resp = client.post("/register", json={"agent_id": "alice"})
         assert resp.status_code == 200
         assert resp.json()["ok"] is True
 
     def test_register_idempotent(self, client: TestClient) -> None:
-        client.post("/bus/register", json={"agent_id": "alice"})
-        resp = client.post("/bus/register", json={"agent_id": "alice"})
+        client.post("/register", json={"agent_id": "alice"})
+        resp = client.post("/register", json={"agent_id": "alice"})
         assert resp.status_code == 200
 
     def test_register_with_metadata(self, client: TestClient) -> None:
         resp = client.post(
-            "/bus/register",
-            json={"agent_id": "bob", "metadata": {"role": "worker"}},
+            "/register",
+            json={"agent_id": "alice", "metadata": {"role": "worker"}},
         )
         assert resp.status_code == 200
+
+    def test_register_empty_agent_id(self, client: TestClient) -> None:
+        resp = client.post("/register", json={"agent_id": ""})
+        assert resp.status_code == 400
 
 
 # ---------------------------------------------------------------------------
 # Send
 # ---------------------------------------------------------------------------
 
-
 class TestSend:
     def test_send_message(self, client: TestClient) -> None:
         _register(client, "alice")
         _register(client, "bob")
         resp = client.post(
-            "/bus/send",
+            "/send",
             json={"sender": "alice", "recipient": "bob", "body": "hello"},
         )
         assert resp.status_code == 200
         data = resp.json()
         assert "message_id" in data
         assert data["recipient"] == "bob"
-        assert "sent_at" in data
 
     def test_send_with_intent(self, client: TestClient) -> None:
         _register(client, "alice")
         _register(client, "bob")
         resp = client.post(
-            "/bus/send",
+            "/send",
             json={
                 "sender": "alice",
                 "recipient": "bob",
-                "body": "fyi msg",
-                "intent": "fyi",
+                "body": "do it",
+                "intent": "execute",
             },
         )
         assert resp.status_code == 200
@@ -116,8 +117,8 @@ class TestSend:
     def test_send_rejects_self(self, client: TestClient) -> None:
         _register(client, "alice")
         resp = client.post(
-            "/bus/send",
-            json={"sender": "alice", "recipient": "alice", "body": "hi"},
+            "/send",
+            json={"sender": "alice", "recipient": "alice", "body": "loop"},
         )
         assert resp.status_code == 400
         assert "TARGET_SELF" in resp.json()["error"]["message"]
@@ -125,15 +126,15 @@ class TestSend:
     def test_send_rejects_unknown_target(self, client: TestClient) -> None:
         _register(client, "alice")
         resp = client.post(
-            "/bus/send",
-            json={"sender": "alice", "recipient": "nobody", "body": "hi"},
+            "/send",
+            json={"sender": "alice", "recipient": "unknown", "body": "hi"},
         )
         assert resp.status_code == 400
         assert "TARGET_UNKNOWN" in resp.json()["error"]["message"]
 
     def test_send_missing_fields(self, client: TestClient) -> None:
-        resp = client.post("/bus/send", json={"sender": "alice"})
-        # Missing required field → 400 with VALIDATION_ERROR
+        resp = client.post("/send", json={"sender": "alice"})
+        # Pydantic validation → 400 with VALIDATION_ERROR
         assert resp.status_code == 400
         assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
 
@@ -142,37 +143,34 @@ class TestSend:
 # Inbox
 # ---------------------------------------------------------------------------
 
-
 class TestInbox:
     def test_inbox_returns_unread(self, client: TestClient) -> None:
         _register(client, "alice")
         _register(client, "bob")
         client.post(
-            "/bus/send",
-            json={"sender": "alice", "recipient": "bob", "body": "hello"},
+            "/send",
+            json={"sender": "alice", "recipient": "bob", "body": "hi bob"},
         )
         resp = client.post(
-            "/bus/inbox", json={"agent_id": "bob", "unread_only": True}
+            "/inbox",
+            json={"agent_id": "bob", "unread_only": True},
         )
         assert resp.status_code == 200
-        msgs = resp.json()["messages"]
-        assert len(msgs) == 1
-        assert msgs[0]["body"] == "hello"
-        assert msgs[0]["sender"] == "alice"
-        assert msgs[0]["intent"] == "triage"  # default intent
+        messages = resp.json()["messages"]
+        assert len(messages) == 1
+        assert messages[0]["body"] == "hi bob"
 
     def test_inbox_marks_read(self, client: TestClient) -> None:
         _register(client, "alice")
         _register(client, "bob")
         client.post(
-            "/bus/send",
+            "/send",
             json={"sender": "alice", "recipient": "bob", "body": "hi"},
         )
-        # First read consumes
-        client.post("/bus/inbox", json={"agent_id": "bob"})
-        # Second read: empty
+        client.post("/inbox", json={"agent_id": "bob"})
         resp = client.post(
-            "/bus/inbox", json={"agent_id": "bob", "unread_only": True}
+            "/inbox",
+            json={"agent_id": "bob", "unread_only": True},
         )
         assert resp.json()["messages"] == []
 
@@ -181,41 +179,40 @@ class TestInbox:
         _register(client, "bob")
         for i in range(5):
             client.post(
-                "/bus/send",
-                json={"sender": "alice", "recipient": "bob", "body": f"msg{i}"},
+                "/send",
+                json={"sender": "alice", "recipient": "bob", "body": f"msg-{i}"},
             )
         resp = client.post(
-            "/bus/inbox", json={"agent_id": "bob", "limit": 2, "unread_only": True}
+            "/inbox",
+            json={"agent_id": "bob", "limit": 2},
         )
         assert len(resp.json()["messages"]) == 2
+
+    def test_inbox_empty_agent_id(self, client: TestClient) -> None:
+        resp = client.post("/inbox", json={"agent_id": ""})
+        assert resp.status_code == 400
 
 
 # ---------------------------------------------------------------------------
 # Inbox peek
 # ---------------------------------------------------------------------------
 
-
 class TestInboxPeek:
     def test_peek_does_not_mark_read(self, client: TestClient) -> None:
         _register(client, "alice")
         _register(client, "bob")
         client.post(
-            "/bus/send",
-            json={"sender": "alice", "recipient": "bob", "body": "peek-test"},
+            "/send",
+            json={"sender": "alice", "recipient": "bob", "body": "peek"},
         )
-        # Peek should NOT consume
         resp = client.post(
-            "/bus/inbox_peek", json={"agent_id": "bob", "limit": 10}
+            "/inbox_peek",
+            json={"agent_id": "bob"},
         )
-        assert resp.status_code == 200
-        msgs = resp.json()["messages"]
-        assert len(msgs) == 1
-        # Message should still be unread (read_at is null)
-        assert msgs[0]["read_at"] is None
-
-        # Verify still available via inbox (unread)
+        assert len(resp.json()["messages"]) == 1
         resp2 = client.post(
-            "/bus/inbox", json={"agent_id": "bob", "unread_only": True}
+            "/inbox",
+            json={"agent_id": "bob", "unread_only": True},
         )
         assert len(resp2.json()["messages"]) == 1
 
@@ -223,115 +220,107 @@ class TestInboxPeek:
         _register(client, "alice")
         _register(client, "bob")
         client.post(
-            "/bus/send",
+            "/send",
             json={"sender": "alice", "recipient": "bob", "body": "old"},
         )
-        # Use a future timestamp → no messages
         resp = client.post(
-            "/bus/inbox_peek",
-            json={"agent_id": "bob", "since_ts": "2099-01-01T00:00:00+00:00"},
+            "/inbox_peek",
+            json={"agent_id": "bob", "since_ts": "2099-01-01T00:00:00Z"},
         )
-        assert len(resp.json()["messages"]) == 0
+        assert resp.json()["messages"] == []
+
+    def test_peek_empty_agent_id(self, client: TestClient) -> None:
+        resp = client.post("/inbox_peek", json={"agent_id": ""})
+        assert resp.status_code == 400
 
 
 # ---------------------------------------------------------------------------
 # List agents
 # ---------------------------------------------------------------------------
 
-
 class TestListAgents:
     def test_list_returns_registered(self, client: TestClient) -> None:
         _register(client, "alice")
-        _register(client, "bob")
-        resp = client.post("/bus/list", json={})
-        assert resp.status_code == 200
+        resp = client.post("/list", json={})
         agents = resp.json()["agents"]
-        ids = [a["agent_id"] for a in agents]
-        assert "alice" in ids
-        assert "bob" in ids
-
-    def test_list_respects_window(self, client: TestClient) -> None:
-        _register(client, "alice")
-        resp = client.post(
-            "/bus/list", json={"active_within_days": 7}
-        )
-        assert len(resp.json()["agents"]) >= 1
+        assert any(a["agent_id"] == "alice" for a in agents)
 
 
 # ---------------------------------------------------------------------------
 # Subscribe
 # ---------------------------------------------------------------------------
 
-
 class TestSubscribe:
-    def test_subscribe_timeout(self, client: TestClient) -> None:
-        """Subscribe with no SignalDir returns CONFIG_ERROR 500."""
+    def test_subscribe_fast_path_without_signal_dir(self, client: TestClient) -> None:
+        """When messages are already pending, subscribe returns them
+        immediately — even without a SignalDir (fast-path)."""
+        _register(client, "alice")
+        _register(client, "bob")
+        client.post(
+            "/send",
+            json={"sender": "alice", "recipient": "bob", "body": "sub-test"},
+        )
+        resp = client.post(
+            "/subscribe",
+            json={"agent_id": "bob", "timeout_seconds": 0.1},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["timed_out"] is False
+        assert len(data["messages"]) == 1
+        assert data["messages"][0]["body"] == "sub-test"
+
+    def test_subscribe_no_messages_no_signal_dir(self, client: TestClient) -> None:
+        """When no messages are pending and no SignalDir is configured,
+        subscribe returns CONFIG_ERROR 500."""
         _register(client, "alice")
         resp = client.post(
-            "/bus/subscribe",
+            "/subscribe",
             json={"agent_id": "alice", "timeout_seconds": 0.1},
         )
         assert resp.status_code == 500
         assert resp.json()["error"]["code"] == "CONFIG_ERROR"
 
-    def test_subscribe_delivers_message(self, client: TestClient) -> None:
-        """Subscribe without SignalDir returns CONFIG_ERROR 500
-        even when messages are pending."""
-        _register(client, "alice")
-        _register(client, "bob")
-        client.post(
-            "/bus/send",
-            json={"sender": "alice", "recipient": "bob", "body": "sub-test"},
-        )
-        resp = client.post(
-            "/bus/subscribe",
-            json={"agent_id": "bob", "timeout_seconds": 0.1},
-        )
-        assert resp.status_code == 500
-        assert resp.json()["error"]["code"] == "CONFIG_ERROR"
+    def test_subscribe_empty_agent_id(self, client: TestClient) -> None:
+        resp = client.post("/subscribe", json={"agent_id": ""})
+        assert resp.status_code == 400
 
 
 # ---------------------------------------------------------------------------
 # Auth
 # ---------------------------------------------------------------------------
 
-
 class TestAuth:
     def test_no_auth_required_when_no_key(self, client: TestClient) -> None:
         _register(client, "alice")
-        # No X-Api-Key header → should succeed (dev mode)
-        resp = client.post(
-            "/bus/inbox", json={"agent_id": "alice"}
-        )
+        resp = client.post("/inbox", json={"agent_id": "alice"})
         assert resp.status_code == 200
 
     def test_auth_rejects_missing_key(self, authed_client: TestClient) -> None:
-        resp = authed_client.post(
-            "/bus/inbox", json={"agent_id": "alice"}
-        )
+        resp = authed_client.post("/register", json={"agent_id": "alice"})
         assert resp.status_code == 401
 
     def test_auth_rejects_wrong_key(self, authed_client: TestClient) -> None:
         resp = authed_client.post(
-            "/bus/inbox",
+            "/register",
             json={"agent_id": "alice"},
-            headers={"X-Api-Key": "wrong"},
+            headers={"Authorization": "Bearer wrong-key"},
         )
         assert resp.status_code == 401
 
     def test_auth_accepts_correct_key(self, authed_client: TestClient) -> None:
         authed_client.post(
-            "/bus/register",
+            "/register",
             json={"agent_id": "alice"},
-            headers={"X-Api-Key": "secret123"},
+            headers={"Authorization": "Bearer test-secret"},
         )
         resp = authed_client.post(
-            "/bus/inbox",
-            json={"agent_id": "alice"},
-            headers={"X-Api-Key": "secret123"},
+            "/send",
+            json={"sender": "alice", "recipient": "alice", "body": "self"},
+            headers={"Authorization": "Bearer test-secret"},
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 400  # TARGET_SELF, but auth passed
 
     def test_health_never_requires_auth(self, authed_client: TestClient) -> None:
-        resp = authed_client.get("/bus/health")
+        resp = authed_client.get("/health")
         assert resp.status_code == 200

@@ -407,22 +407,24 @@ class Store:
 
         Raises:
             RuntimeError: if no ``SignalDir`` was provided at
-                construction (the local-filesystem subscribe path is
+                construction **and** the fast-path found no pending
+                messages (the local-filesystem subscribe path is
                 unavailable).
         """
+        timeout = max(0.0, min(timeout_seconds, self._MAX_SUBSCRIBE_TIMEOUT))
+        limit = max(1, min(limit, 100))
+
+        # Fast path: messages already waiting — no SignalDir needed.
+        existing = self.read_inbox(agent_id, limit=limit, unread_only=True)
+        if existing:
+            return existing, False
+
+        # Slow path: must block on filesystem signal.
         if self._signal_dir is None:
             raise RuntimeError(
                 "Store.subscribe() requires a SignalDir — "
                 "pass signal_dir= at construction, or use HttpBusStore"
             )
-
-        timeout = max(0.0, min(timeout_seconds, self._MAX_SUBSCRIBE_TIMEOUT))
-        limit = max(1, min(limit, 100))
-
-        # Fast path: messages already waiting.
-        existing = self.read_inbox(agent_id, limit=limit, unread_only=True)
-        if existing:
-            return existing, False
 
         fired = self._signal_dir.wait(agent_id, timeout_seconds=timeout)
         if not fired:
