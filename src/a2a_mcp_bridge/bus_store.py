@@ -177,7 +177,13 @@ class HttpBusStore:
     through the remote façade server."""
 
     def __init__(self, base_url: str, agent_id: str, timeout: float = 65.0) -> None:
-        import httpx as _httpx
+        try:
+            import httpx as _httpx
+        except ImportError as exc:
+            raise ImportError(
+                "httpx is required for HttpBusStore (remote façade mode). "
+                "Install it with: pip install a2a-mcp-bridge[remote]"
+            ) from exc
 
         self._httpx = _httpx
         self._base_url = base_url.rstrip("/")
