@@ -292,46 +292,12 @@ class TestSubscribe:
         resp = client.post("/subscribe", json={"agent_id": ""})
         assert resp.status_code == 400
 
-    def test_concurrent_subscribers_both_receive(self, client: TestClient) -> None:
-        """Two concurrent subscribe calls must both complete without
-        blocking each other — proves the anyio.to_thread.run_sync
-        offload works (C2 proof).
-
-        Strategy: start a long subscribe (2 s) for agent A, then
-        immediately check inbox for agent B. If subscribe blocks the
-        ASGI event loop, the inbox call will stall until subscribe
-        returns. With the offload, it completes instantly.
-        """
-        import threading
-        import time
-
-        _register(client, "alice")
-        _register(client, "bob")
-
-        # Long subscribe for alice (no messages → will block 2 s)
-        def do_subscribe() -> None:
-            client.post(
-                "/subscribe",
-                json={"agent_id": "alice", "timeout_seconds": 2.0},
-            )
-
-        sub_thread = threading.Thread(target=do_subscribe)
-        sub_thread.start()
-
-        # Give the subscribe a moment to start blocking
-        time.sleep(0.2)
-
-        # While subscribe is blocking, inbox for bob should be instant
-        t0 = time.monotonic()
-        resp = client.post("/inbox", json={"agent_id": "bob", "unread_only": True})
-        elapsed = time.monotonic() - t0
-        assert resp.status_code == 200
-
-        # If the event loop was blocked by subscribe, this would take ~2 s.
-        # With anyio.to_thread.run_sync, it should be < 0.5 s.
-        assert elapsed < 0.5, f"Inbox call took {elapsed:.2f}s — event loop was blocked?"
-
-        sub_thread.join(timeout=5)
+    # Note: the real "event-loop is not blocked by /subscribe" test lives in
+    # tests/test_facade_integration.py::TestSubscribeLoopBlocking. FastAPI
+    # TestClient and httpx.ASGITransport both execute each request in their
+    # own short-lived event loop, so they cannot detect the C2 bug class
+    # (blocking the uvicorn event loop). Only a real uvicorn subprocess with
+    # concurrent async httpx requests exercises the right topology.
 
 
 # ---------------------------------------------------------------------------

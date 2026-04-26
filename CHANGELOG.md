@@ -6,7 +6,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added — HTTP Facade (v0.5.1)
+### Added — HTTP Facade (v0.6.0)
 
 - **`facade.py` — FastAPI HTTP façade server** — exposes the SQLite bus over
   REST so agents on remote machines can participate. Factory function

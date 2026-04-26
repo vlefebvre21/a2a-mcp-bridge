@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hmac
 import logging
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -234,19 +235,19 @@ def create_app(
         raise
 
     @asynccontextmanager
-    async def lifespan(app: FastAPI):  # type: ignore[override]
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
         store.close()
 
     app = FastAPI(
         title="a2a-mcp-bridge Bus Façade",
         version=__version__,
-        lifespan=lifespan,  # type: ignore[arg-type]
+        lifespan=lifespan,
     )
 
     # Normalise Pydantic validation errors into our error envelope.
     @app.exception_handler(RequestValidationError)
-    async def validation_error_handler(  # type: ignore[override]
+    async def validation_error_handler(
         request: Request, exc: RequestValidationError,
     ) -> JSONResponse:
         missing = [
