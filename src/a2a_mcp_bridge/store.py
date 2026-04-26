@@ -75,6 +75,8 @@ class Store:
             column_type="TEXT NOT NULL DEFAULT 'triage'",
         )
 
+    _KNOWN_TABLES: set[str] = frozenset({"agents", "messages"})
+
     def _add_column_if_missing(
         self,
         *,
@@ -91,13 +93,17 @@ class Store:
         transaction around the second probe + the ALTER itself.
 
         Args:
-            table: target table name (unvalidated — caller-controlled).
+            table: target table name — must be a known table (whitelisted).
             column: column name to add.
             column_type: full SQL type clause minus ``ADD COLUMN``, e.g.
                 ``TEXT`` or ``TEXT NOT NULL DEFAULT 'triage'``. NOT NULL +
                 DEFAULT is required to back-fill existing rows; a bare
                 ``TEXT`` produces NULL in old rows.
         """
+        if table not in self._KNOWN_TABLES:
+            raise ValueError(
+                f"unknown table {table!r} — only {sorted(self._KNOWN_TABLES)} are allowed"
+            )
         existing_cols = {
             row["name"]
             for row in self._conn.execute(
@@ -126,6 +132,24 @@ class Store:
         except Exception:
             self._conn.execute("ROLLBACK")
             raise
+
+    def _row_to_message(self, r: sqlite3.Row) -> Message:
+        """Build a :class:`Message` from a SQLite row.
+
+        Used by :meth:`read_inbox` and :meth:`peek_inbox` to eliminate
+        duplication.
+        """
+        return Message(
+            id=r["id"],
+            sender_id=r["sender_id"],
+            recipient_id=r["recipient_id"],
+            body=r["body"],
+            metadata=json.loads(r["metadata"]) if r["metadata"] else None,
+            created_at=datetime.fromisoformat(r["created_at"]),
+            read_at=datetime.fromisoformat(r["read_at"]) if r["read_at"] else None,
+            sender_session_id=r["sender_session_id"],
+            intent=r["intent"],
+        )
 
     def close(self) -> None:
         self._conn.close()
@@ -288,20 +312,7 @@ class Store:
                 (agent_id, limit),
             ).fetchall()
 
-        return [
-            Message(
-                id=r["id"],
-                sender_id=r["sender_id"],
-                recipient_id=r["recipient_id"],
-                body=r["body"],
-                metadata=json.loads(r["metadata"]) if r["metadata"] else None,
-                created_at=datetime.fromisoformat(r["created_at"]),
-                read_at=datetime.fromisoformat(r["read_at"]) if r["read_at"] else None,
-                sender_session_id=r["sender_session_id"],
-                intent=r["intent"],
-            )
-            for r in rows
-        ]
+        return [self._row_to_message(r) for r in rows]
 
     def peek_inbox(
         self,
@@ -357,17 +368,4 @@ class Store:
                 (agent_id, since_ts, limit),
             ).fetchall()
 
-        return [
-            Message(
-                id=r["id"],
-                sender_id=r["sender_id"],
-                recipient_id=r["recipient_id"],
-                body=r["body"],
-                metadata=json.loads(r["metadata"]) if r["metadata"] else None,
-                created_at=datetime.fromisoformat(r["created_at"]),
-                read_at=datetime.fromisoformat(r["read_at"]) if r["read_at"] else None,
-                sender_session_id=r["sender_session_id"],
-                intent=r["intent"],
-            )
-            for r in rows
-        ]
+        return [self._row_to_message(r) for r in rows]

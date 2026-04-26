@@ -203,35 +203,6 @@ def messages_tail(
 # --------------------------------------------------------------------------- #
 
 
-def _parse_env_file(path: Path) -> dict[str, str]:
-    """Parse a minimal KEY=VALUE .env file.
-
-    Strips surrounding single/double quotes on values. Ignores blank lines and
-    lines starting with '#'. Lines without '=' are skipped silently.
-    """
-    values: dict[str, str] = {}
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return values
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        key = key.strip()
-        value = value.strip()
-        if (value.startswith('"') and value.endswith('"')) or (
-            value.startswith("'") and value.endswith("'")
-        ):
-            value = value[1:-1]
-        if key:
-            values[key] = value
-    return values
-
-
 def _profile_webhook_config(profile_dir: Path) -> dict[str, Any] | None:
     """Read webhook configuration from a Hermes profile.
 
@@ -433,13 +404,6 @@ def wake_registry_init(
         registry_agents[agent_id] = {
             "wake_webhook_url": _build_webhook_url(wc["host"], wc["port"])
         }
-
-    # Root .env → vlbeau-opus (if present) — but only when a webhook config
-    # also exists for the root directory. Webhooks are per-profile in
-    # practice, so this branch is effectively a no-op on typical setups.
-    root_env_path = Path(_expand(hermes_root)) / ".env"
-    if root_env_path.is_file():
-        _integrate(ROOT_PROFILE_AGENT_ID, Path(_expand(hermes_root)))
 
     # One entry per profile subdirectory.
     for profile_dir in sorted(profiles_root.iterdir()):

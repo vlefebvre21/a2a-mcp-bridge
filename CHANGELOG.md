@@ -6,6 +6,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- **`Store._add_column_if_missing` — SQL injection guard** — table names are now
+  validated against a whitelist (`"agents" | "messages"`). Arbitrary table names via
+  the `_add_column_if_missing` method raise `ValueError` instead of interpolating
+  unchecked input into SQL f-strings. ([store.py](src/a2a_mcp_bridge/store.py))
+- **`_resolve_db_path` / `_resolve_signal_dir` — path traversal rejection** — both
+  functions now reject paths containing `..` components via `sys.exit(2)`, and
+  resolve to absolute paths. This prevents `A2A_DB_PATH=../../etc/passwd` or similar
+  escapes as documented in the 2026-04-23 security review.
+- **`load_registry` — HMAC secret permissions check** — `wake.py:load_registry()` now
+  inspects the registry file mode after JSON parse. If group/other have read/write
+  permissions (`0o077` bits set), a WARNING is logged. This is best-effort (FAT,
+  mounted shares don't expose Unix modes) but closes the gap where `chmod 0o600` in
+  cli.py could silently fail. ([wake.py](src/a2a_mcp_bridge/wake.py))
+
+### Hardening
+- **`intents.py` — `str.Enum` for intent values** — replaced opaque `frozenset[str]`
+  constants with a `str.Enum` class `Intent` (EXECUTE, FYI, QUESTION, REVIEW, TRIAGE).
+  `VALID_INTENTS` and `NO_WAKE_INTENTS` are derived automatically. Provides compile-time
+  type hints, forwards `.value`, and prevents typos in intent names.
+- **`_serialize_message` — proper type annotation** — signature changed from
+  `m: Any` to `m: Message` and now imports `Message` directly from `models`.
+  Previously lost type safety at the tool-to-dump boundary.
+
+### Cleanup
+- **Removed dead `_parse_env_file()` code** — the function and its call site in
+  `wake_registry_init()` (root `.env` → `vlbeau-opus`) were dead code: `_integrate`
+  called `_profile_webhook_config()` which reads `config.yaml` +
+  `webhook_subscriptions.json`, not `.env`. (~35 LOC deleted from cli.py)
+- **Deduplicated `_row_to_message`** — extracted a shared `_row_to_message(r)` helper
+  from `_add_column_if_missing` that replaces 3 × 13 lines of Message construction
+  duplicated across `read_inbox` and `peek_inbox`.
+- **`__init__.py` — published `__version__`** — added `__version__ = "0.6.0"` so the
+  package is introspectable without touching `pyproject.toml`.
+
+---
+
 **Theme** — ADR-002 wake-intent coupling (v0.6.0 milestone, γ scope).
 `agent_send` gains an optional `intent` field that lets senders annotate
 messages with their delivery semantics. v1 differentiates binary wake

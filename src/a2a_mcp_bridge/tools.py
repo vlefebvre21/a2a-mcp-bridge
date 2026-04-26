@@ -8,6 +8,7 @@ from typing import Any
 
 from .intents import DEFAULT_INTENT, normalize_intent, wakes
 from .logging_ext import hash_body, log_event
+from .models import Message
 from .signals import SignalDir
 from .store import Store
 from .wake import WebhookWaker
@@ -310,7 +311,7 @@ def tool_agent_subscribe(
     }
 
 
-def _serialize_message(m: Any) -> dict[str, Any]:
+def _serialize_message(m: Message) -> dict[str, Any]:
     return {
         "message_id": m.id,
         "sender": m.sender_id,

@@ -68,12 +68,31 @@ def _resolve_agent_id() -> str:
 
 def _resolve_db_path() -> str:
     raw = os.environ.get("A2A_DB_PATH", "~/.a2a-bus.sqlite")
-    return str(Path(raw).expanduser())
+    path = Path(raw).expanduser()
+    abs_path = path.resolve()
+    # Prevent path traversal outside the intended location.
+    # A2A_DB_PATH should never contain '..' components that escape
+    # a user-controlled directory.
+    if ".." in raw.split("/"):
+        print(
+            f"error: A2A_DB_PATH={raw!r} contains path traversal, "
+            "must be a safe absolute or ~-expanded path",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    return str(abs_path)
 
 
 def _resolve_signal_dir() -> str:
     raw = os.environ.get("A2A_SIGNAL_DIR", DEFAULT_SIGNAL_DIR)
-    return str(Path(raw).expanduser())
+    path = Path(raw).expanduser()
+    if ".." in raw.split("/"):
+        print(
+            f"error: A2A_SIGNAL_DIR={raw!r} contains path traversal",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    return str(path.resolve())
 
 
 def _resolve_wake_registry_path() -> str:

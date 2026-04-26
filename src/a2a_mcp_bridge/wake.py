@@ -167,6 +167,26 @@ def load_registry(path: str) -> tuple[str | None, dict[str, WakeEntry]]:
                 f"wake registry {path}: 'agents' must be an object when "
                 f"'wake_webhook_secret' is set"
             )
+
+        # Security: validate file permissions. The secret is stored in
+        # cleartext in this JSON file; if permissions are too loose
+        # (e.g. world-readable 0644), the HMAC secret could be read by
+        # any user on the host, enabling spoofed wake-up webhooks.
+        # This is a best-effort check: some filesystems (FAT, mounted
+        # shares) don't support Unix modes.
+        try:
+            mode = Path(path).stat().st_mode & 0o777
+            if mode & 0o077:  # group or other has rwx
+                logger.warning(
+                    "wake registry %s has permissive permissions %04o — "
+                    "the HMAC secret is exposed to other users. Ensure the "
+                    "file is chmod 0600.",
+                    path,
+                    mode,
+                )
+        except OSError:
+            pass  # best-effort: stat failures don't block wake-up
+
         entries: dict[str, WakeEntry] = {}
         for agent_id, entry in agents_raw.items():
             entries[agent_id] = _parse_entry(agent_id, entry)

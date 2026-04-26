@@ -17,17 +17,28 @@ ADR-002 §4 Hermes-side work.
 
 from __future__ import annotations
 
+from enum import StrEnum
+
+
+class Intent(StrEnum):
+    """Wake-up intent values (ADR-002)."""
+
+    EXECUTE = "execute"
+    FYI = "fyi"
+    QUESTION = "question"
+    REVIEW = "review"
+    TRIAGE = "triage"
+
+
 # All recognised intent values.
-# Keep alphabetised for diff stability; add new values here first when
-# extending the enum, then wire up behaviour below.
-VALID_INTENTS: frozenset[str] = frozenset(
-    {"execute", "fyi", "question", "review", "triage"}
-)
+# Keep alphabetised for diff stability; add new values to `Intent` above
+# first when extending the enum.
+VALID_INTENTS: frozenset[str] = frozenset(I.value for I in Intent)
 
 # Default intent applied when the caller omits the field or passes None.
 # Must match the pre-ADR-002 behaviour (wake-up triggers the inbox-triage
 # skill on the recipient) so existing callers are unaffected.
-DEFAULT_INTENT: str = "triage"
+DEFAULT_INTENT: str = Intent.TRIAGE
 
 # Intents that DO NOT trigger a webhook wake-up. The message is still
 # persisted and still touches the signal file (so ``agent_subscribe`` and
@@ -35,7 +46,7 @@ DEFAULT_INTENT: str = "triage"
 # to the recipient's gateway — the whole point of the ``fyi`` intent is to
 # avoid spawning an expensive LLM session for a notification nobody needs
 # to action.
-NO_WAKE_INTENTS: frozenset[str] = frozenset({"fyi"})
+NO_WAKE_INTENTS: frozenset[str] = frozenset({Intent.FYI.value})
 
 
 def normalize_intent(raw: str | None) -> tuple[str, bool]:
