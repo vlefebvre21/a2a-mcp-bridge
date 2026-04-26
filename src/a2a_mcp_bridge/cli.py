@@ -83,6 +83,64 @@ def init(
 
 
 @app.command()
+def serve_facade(
+    db: str = typer.Option(DEFAULT_DB, help="Path to SQLite database file."),
+    host: str = typer.Option("127.0.0.1", help="Bind host."),
+    port: int = typer.Option(8080, help="Bind port."),
+    api_key: str = typer.Option(
+        None,
+        "--api-key",
+        envvar="A2A_FACADE_API_KEY",
+        help="Bearer token for API authentication (optional).",
+    ),
+    signal_dir: str = typer.Option(
+        None,
+        "--signal-dir",
+        envvar="A2A_SIGNAL_DIR",
+        help="Directory for filesystem-based subscribe signals.",
+    ),
+    wake_registry: str = typer.Option(
+        None,
+        "--wake-registry",
+        envvar="A2A_WAKE_REGISTRY",
+        help="Path to the webhook wake-registry JSON file.",
+    ),
+) -> None:
+    """Run the HTTP façade server (uvicorn + FastAPI).
+
+    Exposes the SQLite bus as a REST API for remote or HTTP-based agents
+    (e.g. HttpBusStore clients).  This is the production counterpart to
+    the MCP stdio ``serve`` command.
+    """
+    import uvicorn
+
+    from .facade import create_app
+    from .signals import SignalDir
+    from .wake import WebhookWaker, load_registry
+
+    db_path = _expand(db)
+    sig_dir = SignalDir(_expand(signal_dir)) if signal_dir else None
+    waker: WebhookWaker | None = None
+    if wake_registry:
+        reg_path = _expand(wake_registry)
+        shared_secret, entries = load_registry(reg_path)
+        if entries:
+            waker = WebhookWaker(entries, shared_secret)
+            console.print(
+                f"[green]Wake registry[/green] loaded {len(entries)} agent(s) from {reg_path}"
+            )
+
+    app = create_app(
+        db_path=db_path,
+        signal_dir=sig_dir,
+        api_key=api_key or None,
+        waker=waker,
+    )
+    console.print(f"[green]Starting façade[/green] on {host}:{port} (db={db_path})")
+    uvicorn.run(app, host=host, port=port)
+
+
+@app.command()
 def register(
     agent_id: str = typer.Option(
         None,
