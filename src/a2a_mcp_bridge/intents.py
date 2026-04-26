@@ -33,7 +33,7 @@ class Intent(StrEnum):
 # All recognised intent values.
 # Keep alphabetised for diff stability; add new values to `Intent` above
 # first when extending the enum.
-VALID_INTENTS: frozenset[str] = frozenset(I.value for I in Intent)
+VALID_INTENTS: frozenset[str] = frozenset(i.value for i in Intent)
 
 # Default intent applied when the caller omits the field or passes None.
 # Must match the pre-ADR-002 behaviour (wake-up triggers the inbox-triage

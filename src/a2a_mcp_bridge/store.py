@@ -75,7 +75,7 @@ class Store:
             column_type="TEXT NOT NULL DEFAULT 'triage'",
         )
 
-    _KNOWN_TABLES: set[str] = frozenset({"agents", "messages"})
+    _KNOWN_TABLES: frozenset[str] = frozenset({"agents", "messages"})
 
     def _add_column_if_missing(
         self,
