@@ -1,6 +1,5 @@
 """Tests for metadata JSON validation and defensive parsing."""
 
-import json
 import logging
 
 import pytest

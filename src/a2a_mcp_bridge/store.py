@@ -275,10 +275,10 @@ class Store:
                 # Caller passed a raw JSON string — validate it parses.
                 try:
                     json.loads(metadata)
-                except json.JSONDecodeError:
+                except json.JSONDecodeError as e:
                     raise ValueError(
                         "METADATA_INVALID: metadata string is not valid JSON"
-                    )
+                    ) from e
                 metadata_json = metadata
             elif isinstance(metadata, dict):
                 metadata_json = json.dumps(metadata, separators=(",", ":"))
