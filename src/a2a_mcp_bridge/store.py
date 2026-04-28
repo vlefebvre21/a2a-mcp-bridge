@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -25,6 +26,8 @@ from .models import (
 from .signals import SignalDir
 
 SCHEMA_PATH: Path = Path(__file__).parent / "schema.sql"
+
+logger = logging.getLogger(__name__)
 
 
 class Store:
@@ -157,12 +160,23 @@ class Store:
         Used by :meth:`read_inbox` and :meth:`peek_inbox` to eliminate
         duplication.
         """
+        metadata: dict[str, Any] | None = None
+        if r["metadata"]:
+            try:
+                metadata = json.loads(r["metadata"])
+            except json.JSONDecodeError:
+                logger.warning(
+                    "metadata JSON corrupt for message %s, returning None",
+                    r["id"],
+                )
+                metadata = None
+
         return Message(
             id=r["id"],
             sender_id=r["sender_id"],
             recipient_id=r["recipient_id"],
             body=r["body"],
-            metadata=json.loads(r["metadata"]) if r["metadata"] else None,
+            metadata=metadata,
             created_at=datetime.fromisoformat(r["created_at"]),
             read_at=datetime.fromisoformat(r["read_at"]) if r["read_at"] else None,
             sender_session_id=r["sender_session_id"],
@@ -257,7 +271,21 @@ class Store:
 
         metadata_json: str | None = None
         if metadata is not None:
-            metadata_json = json.dumps(metadata, separators=(",", ":"))
+            if isinstance(metadata, str):
+                # Caller passed a raw JSON string — validate it parses.
+                try:
+                    json.loads(metadata)
+                except json.JSONDecodeError as e:
+                    raise ValueError(
+                        "METADATA_INVALID: metadata string is not valid JSON"
+                    ) from e
+                metadata_json = metadata
+            elif isinstance(metadata, dict):
+                metadata_json = json.dumps(metadata, separators=(",", ":"))
+            else:
+                raise ValueError(
+                    "METADATA_INVALID: metadata must be a dict, a JSON string, or None"
+                )
             if len(metadata_json.encode("utf-8")) > MAX_METADATA_BYTES:
                 raise ValueError(f"METADATA_TOO_LARGE: metadata exceeds {MAX_METADATA_BYTES} bytes")
 
