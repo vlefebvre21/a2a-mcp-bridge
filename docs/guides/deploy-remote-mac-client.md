@@ -135,6 +135,8 @@ hermes webhook subscribe a2a-wake \
   --secret "<wake_hmac_secret>"
 ```
 
+> **Note**: The route name (`a2a-wake` here) determines the webhook endpoint path: `/webhooks/a2a-wake`. This **must match** the URL registered in the wake registry (Step 9). If your VPS agents use `/webhooks/wake` as the wake path, name this subscription `wake` instead. Mismatched routes are the most common reason wake webhooks don't fire — always cross-check the subscription name against the `wake_webhook_url` in the registry.
+
 > **Note**: Hermes expects the HMAC signature in the `X-Webhook-Signature` header without a `sha256=` prefix.
 
 ## Step 7 — Start the Hermes gateway
@@ -179,13 +181,13 @@ curl -s -X POST http://127.0.0.1:8660/webhooks/a2a-wake
 
 On the VPS, add the Mac agent to the wake registry:
 
-```python
+```bash
 python3 -c "
-import json
-with open('$HOME/.a2a-wake-registry.json','r') as f:
+import json, os
+with open(os.path.expanduser('~/.a2a-wake-registry.json'),'r') as f:
     d=json.load(f)
 d['agents']['my-mac-agent']={'wake_webhook_url':'http://127.0.0.1:8660/webhooks/a2a-wake'}
-with open('$HOME/.a2a-wake-registry.json','w') as f:
+with open(os.path.expanduser('~/.a2a-wake-registry.json'),'w') as f:
     json.dump(d,f,indent=2)
 print('Done -', len(d.get('agents',{})), 'agents')
 "
@@ -224,7 +226,7 @@ tail -20 ~/.hermes/logs/agent.log | grep "a2a-wake\|inbox\|agent_send"
 
 ### Wake does not trigger automatically
 
-The facade must call the webhook on `agent_send` to the Mac agent. If wake is manual only, the facade does not yet consult the wake registry on message insertion. This is the "last mile" to wire up.
+The facade **does** forward wake-up webhooks to the wake registry (best-effort per the main README). If wake is not firing, the most likely cause is a **route mismatch** between the webhook subscription name and the `wake_webhook_url` in the registry — e.g. the subscription creates `/webhooks/a2a-wake` but the registry points to `/webhooks/wake`. Verify both paths match exactly (see Step 6 note). Other things to check: SSH tunnel down, wrong HMAC secret, or the facade not reaching the registry's `wake_webhook_url`.
 
 ### SSH tunnel drops
 
