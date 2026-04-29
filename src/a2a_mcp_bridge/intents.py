@@ -36,9 +36,8 @@ class Intent(StrEnum):
 VALID_INTENTS: frozenset[str] = frozenset(i.value for i in Intent)
 
 # Default intent applied when the caller omits the field or passes None.
-# Must match the pre-ADR-002 behaviour (wake-up triggers the inbox-triage
-# skill on the recipient) so existing callers are unaffected.
-DEFAULT_INTENT: str = Intent.TRIAGE
+# EXECUTE ensures tasks are actionable by default rather than merely triaged.
+DEFAULT_INTENT: str = Intent.EXECUTE
 
 # Intents that DO NOT trigger a webhook wake-up. The message is still
 # persisted and still touches the signal file (so ``agent_subscribe`` and
