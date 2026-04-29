@@ -125,6 +125,55 @@ def _load_waker() -> WebhookWaker | None:
     return WebhookWaker(registry, shared_secret=shared_secret)
 
 
+# Module-level cache for _load_waker_if_stale: (waker, mtime) tuple.
+_waker_cache: tuple[WebhookWaker | None, float] | None = None
+
+
+def _load_waker_if_stale() -> WebhookWaker | None:
+    """Return a cached waker, reloading if the registry file's mtime changed.
+
+    On the first call (or after :func:`_reset_waker_cache`), the registry is
+    loaded unconditionally. On subsequent calls, the file's mtime is compared
+    to the cached value. If the mtime differs, the waker is reloaded; otherwise
+    the cached instance is returned.
+
+    This allows long-running bridge processes to pick up registry changes
+    (e.g. new agents added by the CLI) without restarting.
+    """
+    global _waker_cache
+    path = _resolve_wake_registry_path()
+    try:
+        current_mtime = Path(path).stat().st_mtime
+    except OSError:
+        # File missing or unreadable: if we have a cached waker it's stale,
+        # otherwise just load (which returns None for missing files).
+        if _waker_cache is not None:
+            logger.info("wake registry %s gone, clearing cache", path)
+            _waker_cache = None
+        return _load_waker()
+
+    if _waker_cache is not None:
+        cached_waker, cached_mtime = _waker_cache
+        if cached_mtime == current_mtime:
+            return cached_waker
+        logger.info(
+            "wake registry %s mtime changed (%s -> %s), reloading",
+            path,
+            cached_mtime,
+            current_mtime,
+        )
+
+    waker = _load_waker()
+    _waker_cache = (waker, current_mtime)
+    return waker
+
+
+def _reset_waker_cache() -> None:
+    """Clear the module-level waker cache (for testing)."""
+    global _waker_cache
+    _waker_cache = None
+
+
 class A2AMcp(FastMCP):
     """FastMCP subclass that advertises ``tools.listChanged`` capability.
 
@@ -191,7 +240,7 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
         store = Store(db_path, signal_dir=sd)
         store.init_schema()
         signal_dir = sd
-        waker = _load_waker()
+        waker = _load_waker_if_stale()
     store.upsert_agent(agent_id)
 
     mcp = A2AMcp("a2a-mcp-bridge")
@@ -243,7 +292,7 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
         local gateway endpoint. SKIPPED for ``intent=fyi`` (ADR-002).
         """
         return tool_agent_send(
-            store, agent_id, target, message, metadata, signal_dir, waker,
+            store, agent_id, target, message, metadata, signal_dir, _load_waker_if_stale(),
             intent=intent,
         )
 
