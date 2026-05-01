@@ -27,3 +27,32 @@ def test_resolve_transfer_dir_honours_env(tmp_path: Path, monkeypatch: pytest.Mo
     result = resolve_transfer_dir()
     assert result == target
     assert result.is_dir()
+
+
+def test_new_transfer_id_is_uuid4(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("A2A_TRANSFER_DIR", str(tmp_path))
+    import uuid as _uuid
+
+    from a2a_mcp_bridge.transfers import new_transfer_id
+
+    tid = new_transfer_id()
+    assert _uuid.UUID(tid).version == 4
+
+
+def test_transfer_path_includes_sha_prefix(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("A2A_TRANSFER_DIR", str(tmp_path))
+    from a2a_mcp_bridge.transfers import transfer_path
+
+    p = transfer_path("11111111-2222-3333-4444-555555555555", "abcdef0123456789" + "0" * 48, "report.md")
+    assert p.name == "abcdef0123456789_report.md"
+    assert p.parent.name == "11111111-2222-3333-4444-555555555555"
+    assert p.parent.parent == tmp_path
+
+
+def test_is_safe_path_rejects_traversal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("A2A_TRANSFER_DIR", str(tmp_path))
+    from a2a_mcp_bridge.transfers import is_safe_path
+
+    assert is_safe_path(tmp_path / "abc" / "file.md") is True
+    assert is_safe_path(Path("/etc/passwd")) is False
+    assert is_safe_path(tmp_path / ".." / "file.md") is False  # normalises up

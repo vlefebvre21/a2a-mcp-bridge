@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -46,3 +47,33 @@ def resolve_transfer_dir() -> Path:
     path = Path(override) if override else Path.home() / ".a2a-transfers"
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
     return path
+
+
+def new_transfer_id() -> str:
+    """Return a fresh UUID4 string."""
+    return str(uuid.uuid4())
+
+
+def transfer_path(transfer_id: str, sha256_hex: str, filename: str) -> Path:
+    """Return the canonical on-disk path for a transfer.
+
+    Layout: ``<transfer_dir>/<transfer_id>/<sha256[:16]>_<filename>``.
+    The caller is responsible for creating the parent directory.
+    """
+    base = resolve_transfer_dir()
+    return base / transfer_id / f"{sha256_hex[:16]}_{filename}"
+
+
+def is_safe_path(candidate: Path) -> bool:
+    """Return True iff *candidate*'s realpath lives under the transfer dir.
+
+    Defends against path-traversal (``../../etc/passwd``) and symlink
+    escapes. Both sides of the check are resolved via :func:`os.path.realpath`.
+    """
+    base = os.path.realpath(resolve_transfer_dir())
+    try:
+        real = os.path.realpath(candidate)
+    except OSError:
+        return False
+    base_sep = base if base.endswith(os.sep) else base + os.sep
+    return real == base or real.startswith(base_sep)
