@@ -16,7 +16,6 @@ from a2a_mcp_bridge.tools import (
     tool_agent_send_file,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -48,8 +47,9 @@ def _make_mock_http_store() -> MagicMock:
     # send_message must return something that looks like SendResult for
     # tool_agent_send (called internally by tool_agent_send_file).
     # We patch it so the inner send succeeds.
+    from datetime import UTC, datetime
+
     from a2a_mcp_bridge.models import SendResult
-    from datetime import datetime, UTC
 
     mock.send_message = MagicMock(
         return_value=SendResult(

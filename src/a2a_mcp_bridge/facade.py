@@ -15,10 +15,11 @@ import shutil
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
@@ -358,7 +359,7 @@ def create_app(
     @app.post("/transfers/upload")
     async def transfer_upload(
         request: Request,
-        file: UploadFile = File(...),
+        file: UploadFile = File(...),  # noqa: B008
         sender: str = Form(...),
         recipient: str = Form(...),
         ttl_hours: int = Form(default=24),
@@ -406,17 +407,18 @@ def create_app(
         tmp_path.rename(final_path)
         os.chmod(final_path, 0o600)
 
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
 
-        expires_at = datetime.now(timezone.utc) + timedelta(hours=ttl_hours)
+        expires_at = datetime.now(UTC) + timedelta(hours=ttl_hours)
 
         xfer_store.create(
-            transfer_id=transfer_id,
+            id=transfer_id,
             sender_id=sender,
             recipient_id=recipient,
             filename=safe_filename,
-            size=total_size,
+            size_bytes=total_size,
             sha256=sha.hexdigest(),
+            staged_path=str(final_path),
             expires_at=expires_at.isoformat(),
         )
 

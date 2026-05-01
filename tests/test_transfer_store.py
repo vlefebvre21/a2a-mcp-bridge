@@ -9,7 +9,6 @@ import pytest
 
 from a2a_mcp_bridge.transfer_store import TransferStore
 
-
 # -- fixture ---------------------------------------------------------------
 
 

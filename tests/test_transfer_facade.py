@@ -15,7 +15,6 @@ from starlette.testclient import TestClient
 
 from a2a_mcp_bridge.facade import create_app
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
