@@ -1,4 +1,15 @@
-"""SQLite-backed transfer store for ADR-007 Phase C — tracks file transfers staged on the facade server."""
+"""SQLite-backed transfer store for ADR-007 Phase C — tracks file transfers staged on the facade server.
+
+Source of truth split (ADR-007):
+  - Phase A (same-machine): ``transfers.py`` uses ``meta.json`` files on disk.
+    No TransferStore involved — the local Store + meta.json are sufficient.
+  - Phase C (cross-host / façade): this module tracks uploads in SQLite.
+    The façade server is the only host with access to both the staged file
+    and this database; remote agents query via HTTP.
+
+The two stores are intentionally separate: Phase A agents never touch
+TransferStore, and Phase C agents never read local meta.json files.
+"""
 
 from __future__ import annotations
 
@@ -80,7 +91,7 @@ class TransferStore:
         sha256: str,
         staged_path: str,
         expires_at: str,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Insert a new transfer row and return it as a dict.
 
         Args:
@@ -141,7 +152,7 @@ class TransferStore:
         ).fetchone()
         return self._row_to_dict(row)
 
-    def get(self, transfer_id: str) -> dict | None:
+    def get(self, transfer_id: str) -> dict[str, Any] | None:
         """Return a transfer row by id, or ``None`` if not found.
 
         Args:
@@ -204,7 +215,7 @@ class TransferStore:
             raise
         return cursor.rowcount > 0
 
-    def list_expired(self) -> list[dict]:
+    def list_expired(self) -> list[dict[str, Any]]:
         """Return all transfers that have expired and are not yet soft-deleted.
 
         Used by the external reaper to identify files whose TTL has
@@ -242,7 +253,7 @@ class TransferStore:
             """,
             (sender_id, now),
         ).fetchone()
-        return row["cnt"]
+        return int(row["cnt"])
 
     def close(self) -> None:
         """Close the underlying SQLite connection."""

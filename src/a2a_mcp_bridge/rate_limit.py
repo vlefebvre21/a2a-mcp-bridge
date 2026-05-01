@@ -264,7 +264,7 @@ def ratelimit_middleware_factory(
         def _get_ip(request: Any) -> str:
             client = getattr(request, "client", None)
             if client is not None:
-                return client.host
+                return str(client.host)
             return str(getattr(request, "headers", {}).get("x-forwarded-for", "127.0.0.1"))
 
         get_client_ip = _get_ip

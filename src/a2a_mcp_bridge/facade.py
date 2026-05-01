@@ -257,7 +257,7 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        async def _transfer_sweep_loop():
+        async def _transfer_sweep_loop() -> None:
             while True:
                 await asyncio.sleep(300)  # 5 minutes
                 expired = xfer_store.list_expired()
@@ -431,7 +431,7 @@ def create_app(
         })
 
     @app.get("/transfers/{transfer_id}")
-    async def transfer_download(request: Request, transfer_id: str) -> FileResponse:
+    async def transfer_download(request: Request, transfer_id: str) -> Response:
         _check_auth(request, api_key)
 
         record = xfer_store.get(transfer_id)

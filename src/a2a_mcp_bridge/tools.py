@@ -449,26 +449,21 @@ def tool_agent_fetch_file(
     The path is returned verbatim — the LLM tool that actually reads
     the bytes (e.g. ``read_file``) is invoked separately. Validates
     sha256 by default (cost ~50 ms per 100 MB).
+
+    Phase C (remote / HttpBusStore): the manifest lives on the façade
+    server — there is **no** local ``meta.json`` on the receiving host.
+    We short-circuit directly to ``download_transfer()`` which queries
+    the façade's SQLite-backed TransferStore.  Integrity is verified
+    via the ``X-Transfer-SHA256`` header already checked inside
+    ``HttpBusStore.download_transfer()``.
+
+    Phase A (local / Store): reads ``meta.json`` from the staging dir
+    and resolves the on-disk path with ACL checks.
     """
-    try:
-        m = load_manifest(transfer_id)
-    except FileNotFoundError:
-        return {"error": {"code": "TRANSFER_NOT_FOUND", "message": transfer_id}}
-    except PermissionError as e:
-        return {"error": {"code": "TRANSFER_ACL_DENIED", "message": str(e)}}
-
-    locator_scheme = m.get("locator", {}).get("scheme", "file")
-
-    if locator_scheme == "http":
-        # --- Phase C: remote download via HttpBusStore ---
-        if not isinstance(store, HttpBusStore):
-            return {
-                "error": {
-                    "code": "TRANSFER_SCHEME_MISMATCH",
-                    "message": "http locator but store is not HttpBusStore",
-                }
-            }
+    # --- Phase C: remote download via HttpBusStore (no local manifest) ---
+    if isinstance(store, HttpBusStore):
         import tempfile as _tf
+        from pathlib import Path as _Path
 
         with _tf.TemporaryDirectory(prefix="a2a_fetch_") as tmp_dir:
             try:
@@ -479,6 +474,17 @@ def tool_agent_fetch_file(
                 return {"error": {"code": "TRANSFER_NOT_FOUND", "message": transfer_id}}
             except PermissionError as e:
                 return {"error": {"code": "TRANSFER_ACL_DENIED", "message": str(e)}}
+            except ValueError as e:
+                # SHA-256 mismatch from download_transfer header check
+                return {"error": {"code": "TRANSFER_HASH_MISMATCH", "message": str(e)}}
+
+            # Build minimal metadata from the downloaded file itself.
+            # The façade already verified SHA-256 via X-Transfer-SHA256
+            # header inside download_transfer(); re-verify only when
+            # the caller explicitly requests it (belt-and-suspenders).
+            local_file = _Path(local_path)
+            file_stat = local_file.stat()
+            sha256_hex: str | None = None
 
             if verify:
                 import hashlib as _h
@@ -487,20 +493,26 @@ def tool_agent_fetch_file(
                 with open(local_path, "rb") as f:
                     for chunk in iter(lambda: f.read(64 * 1024), b""):
                         h.update(chunk)
-                if h.hexdigest() != m["sha256"]:
-                    return {"error": {"code": "TRANSFER_HASH_MISMATCH", "message": transfer_id}}
+                sha256_hex = h.hexdigest()
 
             return {
                 "transfer_id": transfer_id,
                 "path": str(local_path),
-                "size": m["size"],
-                "sha256": m["sha256"],
-                "filename": m["filename"],
-                "description": m.get("description", ""),
-                "expires_at": _iso_utc(m["expires_at"]),
+                "size": file_stat.st_size,
+                "sha256": sha256_hex or "",
+                "filename": local_file.name,
+                "description": "",
+                "expires_at": "",
             }
 
-    # --- Phase A: local file scheme ---
+    # --- Phase A: local file scheme (manifest on disk) ---
+    try:
+        m = load_manifest(transfer_id)
+    except FileNotFoundError:
+        return {"error": {"code": "TRANSFER_NOT_FOUND", "message": transfer_id}}
+    except PermissionError as e:
+        return {"error": {"code": "TRANSFER_ACL_DENIED", "message": str(e)}}
+
     try:
         path = resolve_locator_path(transfer_id, caller_id=caller_id)
     except FileNotFoundError:

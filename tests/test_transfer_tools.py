@@ -166,48 +166,29 @@ def test_send_file_local(
 
 def test_fetch_file_http_scheme(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    transfer_dir: Path,
 ) -> None:
-    """tool_agent_fetch_file with an http-scheme manifest calls
-    store.download_transfer."""
+    """tool_agent_fetch_file with HttpBusStore downloads via
+    store.download_transfer — no local meta.json needed (Phase C).
+
+    This test verifies the cross-host scenario: the receiving agent
+    (on the Mac) does NOT have a local meta.json for the transfer.
+    The HttpBusStore short-circuits load_manifest() and goes directly
+    to download_transfer(), which queries the façade's TransferStore.
+    """
     mock_store = _make_mock_http_store()
-
-    # Plant a manifest on disk with locator.scheme == "http"
     tid = "remote-fetch-tid"
-    sha = "b" * 64
-    manifest_dir = transfer_dir / tid
-    manifest_dir.mkdir(parents=True, exist_ok=True)
-    manifest = {
-        "transfer_id": tid,
-        "sender_id": "alice",
-        "recipient_id": "bob",
-        "filename": "data.bin",
-        "size": 99,
-        "sha256": sha,
-        "description": "test fetch",
-        "created_at": time.time(),
-        "expires_at": time.time() + 86400,
-        "locator": {
-            "scheme": "http",
-            "url": "https://bus.example.com/transfers/remote-fetch-tid",
-        },
-        "version": 1,
-    }
-    (manifest_dir / "meta.json").write_text(json.dumps(manifest))
 
-    # download_transfer returns a local path
-    downloaded_file = tmp_path / "fetched" / "data.bin"
-    downloaded_file.parent.mkdir(parents=True, exist_ok=True)
-    downloaded_file.write_bytes(b"x" * 99)
-    # sha256 of 99 x's
+    # Prepare a local file that download_transfer will "return"
+    # (simulating the file fetched from the remote façade).
+    fetched_dir = tmp_path / "fetched"
+    fetched_dir.mkdir(parents=True, exist_ok=True)
+    fetched_file = fetched_dir / "data.bin"
+    fetched_file.write_bytes(b"x" * 99)
     import hashlib
 
     real_sha = hashlib.sha256(b"x" * 99).hexdigest()
-    manifest["sha256"] = real_sha
-    (manifest_dir / "meta.json").write_text(json.dumps(manifest))
 
-    mock_store.download_transfer.return_value = str(downloaded_file)
+    mock_store.download_transfer.return_value = str(fetched_file)
 
     result = tool_agent_fetch_file(
         mock_store,
@@ -216,17 +197,64 @@ def test_fetch_file_http_scheme(
         verify=True,
     )
 
-    # download_transfer was called
+    # download_transfer was called — no local meta.json was consulted
     mock_store.download_transfer.assert_called_once()
     call_args = mock_store.download_transfer.call_args
     assert call_args[0][0] == tid  # positional: transfer_id
-    # dest_dir is a temp dir — just confirm it was passed
     assert "dest_dir" in call_args.kwargs or len(call_args[0]) > 1
 
     assert "error" not in result
     assert result["transfer_id"] == tid
     assert result["filename"] == "data.bin"
-    assert result["path"] == str(downloaded_file)
+    assert result["path"] == str(fetched_file)
+    assert result["sha256"] == real_sha
+    assert result["size"] == 99
+
+
+# ---------------------------------------------------------------------------
+# 3b. test_fetch_file_http_no_local_manifest — C1 non-regression
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_file_http_no_local_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    transfer_dir: Path,
+) -> None:
+    """C1 non-regression: HttpBusStore fetch must succeed even when no
+    local meta.json exists for the transfer_id.
+
+    Before the fix, tool_agent_fetch_file called load_manifest() FIRST,
+    which reads the local meta.json.  On a cross-host receiver (e.g. Mac)
+    there is no local staging dir, so load_manifest() raised
+    FileNotFoundError → TRANSFER_NOT_FOUND.  The fix short-circuits:
+    HttpBusStore → download_transfer() directly, no manifest lookup.
+    """
+    mock_store = _make_mock_http_store()
+    tid = "cross-host-tid"
+
+    # Intentionally do NOT create a meta.json in transfer_dir — this
+    # is exactly the cross-host scenario (Mac has no local staging).
+    assert not (transfer_dir / tid / "meta.json").exists()
+
+    # Simulate the downloaded file
+    fetched_file = tmp_path / "downloaded" / "payload.csv"
+    fetched_file.parent.mkdir(parents=True, exist_ok=True)
+    fetched_file.write_text("a,b,c\n1,2,3\n")
+
+    mock_store.download_transfer.return_value = str(fetched_file)
+
+    result = tool_agent_fetch_file(
+        mock_store,
+        caller_id="bob",
+        transfer_id=tid,
+        verify=False,
+    )
+
+    assert "error" not in result
+    assert result["transfer_id"] == tid
+    assert result["filename"] == "payload.csv"
+    assert result["path"] == str(fetched_file)
 
 
 # ---------------------------------------------------------------------------
