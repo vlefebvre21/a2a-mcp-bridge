@@ -7,6 +7,7 @@ frozen by that ADR — do not change without amending it.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import uuid
@@ -86,11 +87,14 @@ class TransferRecord:
     """Immutable record of a staged transfer (returned by stage_file)."""
     transfer_id: str
     sender_id: str
+    recipient_id: str
     filename: str
     size: int
     sha256: str
     locator_path: str   # absolute path, scheme=file
+    description: str
     created_at: float   # time.time() (wall clock, for expiry math)
+    expires_at: float   # epoch seconds
 
 
 def _hash_and_copy(src: Path, dest: Path) -> tuple[str, int]:
@@ -117,13 +121,47 @@ def _hash_and_copy(src: Path, dest: Path) -> tuple[str, int]:
     return h.hexdigest(), size
 
 
-def stage_file(source: Path, *, sender_id: str, filename: str) -> TransferRecord:
+def _count_pending_for_sender(sender_id: str) -> int:
+    """Count un-expired transfers owned by *sender_id*."""
+    import time as _time
+
+    base = resolve_transfer_dir()
+    now = _time.time()
+    count = 0
+    if not base.is_dir():
+        return 0
+    for child in base.iterdir():
+        if not child.is_dir():
+            continue
+        meta_path = child / "meta.json"
+        if not meta_path.is_file():
+            continue
+        try:
+            m = json.loads(meta_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        if m.get("sender_id") == sender_id and float(m.get("expires_at", 0.0)) > now:
+            count += 1
+    return count
+
+
+def stage_file(
+    source: Path,
+    *,
+    sender_id: str,
+    recipient_id: str,
+    filename: str,
+    description: str = "",
+    expires_in: int | None = None,
+) -> TransferRecord:
     """Copy *source* into the staging dir and return a :class:`TransferRecord`.
 
     Raises:
         FileNotFoundError: if *source* does not exist.
         ValueError: ``TRANSFER_TOO_LARGE: ...`` if the file exceeds
             ``A2A_TRANSFER_MAX_SIZE_BYTES``.
+        ValueError: ``TRANSFER_QUOTA_EXCEEDED: ...`` if the sender has
+            too many pending transfers.
     """
     import time as _time
 
@@ -137,7 +175,23 @@ def stage_file(source: Path, *, sender_id: str, filename: str) -> TransferRecord
             f"TRANSFER_TOO_LARGE: {src_size} bytes exceeds limit {max_size}"
         )
 
+    # Quota check before staging
+    max_pending = _env_int("A2A_TRANSFER_MAX_PENDING_PER_AGENT", _DEFAULT_MAX_PENDING_PER_AGENT)
+    pending = _count_pending_for_sender(sender_id)
+    if pending >= max_pending:
+        raise ValueError(
+            f"TRANSFER_QUOTA_EXCEEDED: {pending} pending transfers for {sender_id}, limit {max_pending}"
+        )
+
     tid = new_transfer_id()
+    rec_created_at = _time.time()
+
+    # TTL clamping: min(ttl, max_ttl), no lower bound (negative = already expired, useful for tests)
+    ttl = expires_in if expires_in is not None else _env_int("A2A_TRANSFER_DEFAULT_TTL_SECONDS", _DEFAULT_TTL_SECONDS)
+    max_ttl = _env_int("A2A_TRANSFER_MAX_TTL_SECONDS", _DEFAULT_MAX_TTL_SECONDS)
+    ttl = min(ttl, max_ttl)
+    expires_at = rec_created_at + ttl
+
     # Stage with a first pass to get sha256, then rename to canonical name.
     # Two-step because the canonical filename includes sha256[:16].
     staging_tmp = resolve_transfer_dir() / tid / f".staging_{filename}"
@@ -145,12 +199,34 @@ def stage_file(source: Path, *, sender_id: str, filename: str) -> TransferRecord
     final = transfer_path(tid, sha, filename)
     os.rename(staging_tmp, final)
 
+    # Write meta.json atomically
+    manifest = {
+        "transfer_id": tid,
+        "sender_id": sender_id,
+        "recipient_id": recipient_id,
+        "filename": filename,
+        "size": actual_size,
+        "sha256": sha,
+        "description": description,
+        "created_at": rec_created_at,
+        "expires_at": expires_at,
+        "locator": {"scheme": "file", "path": str(final)},
+        "version": 1,
+    }
+    meta_dir = resolve_transfer_dir() / tid
+    meta_tmp = meta_dir / "meta.json.tmp"
+    meta_tmp.write_text(json.dumps(manifest, indent=2, sort_keys=True))
+    os.rename(meta_tmp, meta_dir / "meta.json")
+
     return TransferRecord(
         transfer_id=tid,
         sender_id=sender_id,
+        recipient_id=recipient_id,
         filename=filename,
         size=actual_size,
         sha256=sha,
         locator_path=str(final),
-        created_at=_time.time(),
+        description=description,
+        created_at=rec_created_at,
+        expires_at=expires_at,
     )

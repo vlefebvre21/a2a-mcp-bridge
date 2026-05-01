@@ -65,7 +65,7 @@ def test_stage_file_creates_staged_copy(tmp_path: Path, monkeypatch: pytest.Monk
 
     from a2a_mcp_bridge.transfers import stage_file
 
-    rec = stage_file(src, sender_id="alice", filename="source.md")
+    rec = stage_file(src, sender_id="alice", recipient_id="bob", filename="source.md")
     assert rec.size == len(b"hello world\n")
     assert rec.filename == "source.md"
     assert Path(rec.locator_path).is_file()
@@ -84,7 +84,7 @@ def test_stage_file_rejects_too_large(tmp_path: Path, monkeypatch: pytest.Monkey
     from a2a_mcp_bridge.transfers import stage_file
 
     with pytest.raises(ValueError, match="TRANSFER_TOO_LARGE"):
-        stage_file(src, sender_id="alice", filename="big.bin")
+        stage_file(src, sender_id="alice", recipient_id="bob", filename="big.bin")
 
 
 def test_stage_file_rejects_source_outside_fs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -92,4 +92,37 @@ def test_stage_file_rejects_source_outside_fs(tmp_path: Path, monkeypatch: pytes
     from a2a_mcp_bridge.transfers import stage_file
 
     with pytest.raises(FileNotFoundError):
-        stage_file(tmp_path / "ghost.md", sender_id="alice", filename="ghost.md")
+        stage_file(tmp_path / "ghost.md", sender_id="alice", recipient_id="bob", filename="ghost.md")
+
+
+def test_stage_file_writes_manifest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import json
+
+    monkeypatch.setenv("A2A_TRANSFER_DIR", str(tmp_path))
+    src = tmp_path / "source.md"
+    src.write_text("hi")
+
+    from a2a_mcp_bridge.transfers import stage_file
+
+    rec = stage_file(src, sender_id="alice", filename="source.md", recipient_id="bob", description="test")
+    meta_path = Path(rec.locator_path).parent / "meta.json"
+    assert meta_path.is_file()
+    meta = json.loads(meta_path.read_text())
+    assert meta["sender_id"] == "alice"
+    assert meta["recipient_id"] == "bob"
+    assert meta["description"] == "test"
+    assert meta["sha256"] == rec.sha256
+
+
+def test_stage_file_quota_enforced(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("A2A_TRANSFER_DIR", str(tmp_path))
+    monkeypatch.setenv("A2A_TRANSFER_MAX_PENDING_PER_AGENT", "2")
+
+    from a2a_mcp_bridge.transfers import stage_file
+
+    src = tmp_path / "src.md"
+    src.write_text("x")
+    stage_file(src, sender_id="alice", filename="a.md", recipient_id="bob")
+    stage_file(src, sender_id="alice", filename="b.md", recipient_id="bob")
+    with pytest.raises(ValueError, match="TRANSFER_QUOTA_EXCEEDED"):
+        stage_file(src, sender_id="alice", filename="c.md", recipient_id="bob")
