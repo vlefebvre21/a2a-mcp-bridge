@@ -6,6 +6,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-05-01
+
+### Added — File Transfer Primitive (ADR-007 Option A)
+
+- **`transfers.py` — same-machine file staging primitive** — new module that
+  stages a local file under `A2A_TRANSFER_DIR` (default `~/.a2a-transfers`,
+  mode `0o700`) and returns a `TransferRecord` with sha256, size, locator
+  path, and TTL expiry. Implements atomic copy (tmp → fsync → rename), mode
+  `0o600` on staged files, path-traversal guard via `realpath`, per-agent
+  quota (`A2A_TRANSFER_MAX_PENDING_PER_AGENT`, default 50), size cap
+  (`A2A_TRANSFER_MAX_SIZE_BYTES`, default 100 MB), and TTL sweep via
+  `_transfer_sweep()`. ACL scoped to the declared sender/recipient pair.
+  See ADR-007 §4 for the frozen wire protocol.
+  ([transfers.py](src/a2a_mcp_bridge/transfers.py))
+- **Three new MCP tools — `agent_send_file`, `agent_fetch_file`,
+  `agent_delete_file`** — thin adapters wired into `server.py`:
+  - `agent_send_file(target, file_path, description?, expires_in?, intent?)`
+    stages the file and posts an ADR-007 JSON reference message (`kind:
+    "file_transfer"`, `version: 1`) to the bus. The raw file bytes never
+    enter either agent's LLM context.
+  - `agent_fetch_file(transfer_id, verify=True)` resolves the locator to
+    a local path after ACL check; re-verifies sha256 by default (~50 ms
+    per 100 MB).
+  - `agent_delete_file(transfer_id)` removes the staged directory. Scoped
+    to sender/recipient.
+  ([tools.py](src/a2a_mcp_bridge/tools.py),
+   [server.py](src/a2a_mcp_bridge/server.py))
+- **Environment variables** (all with safe defaults):
+  - `A2A_TRANSFER_DIR` — staging directory (default `~/.a2a-transfers`)
+  - `A2A_TRANSFER_MAX_SIZE_BYTES` — per-file size cap (default 100 MB)
+  - `A2A_TRANSFER_MAX_PENDING_PER_AGENT` — quota (default 50)
+  - `A2A_TRANSFER_DEFAULT_TTL_SECONDS` — default TTL (default 86400 = 24 h)
+  - `A2A_TRANSFER_MAX_TTL_SECONDS` — hard TTL cap (default 604800 = 7 d)
+
+### Known limitations (v0.7.0)
+
+- **Same-machine only.** Sender and recipient must share the filesystem
+  under `A2A_TRANSFER_DIR`. Cross-machine transfer is deferred to Option C
+  (v0.7.1 via the HTTP facade), per ADR-007 §4.
+- **TTL sweep is manual.** `_transfer_sweep()` exists but is not
+  auto-scheduled — callers must invoke it (e.g. cron, startup hook). A
+  background task in `build_server()` is tracked as a follow-up.
+
 ### Added — HTTP Facade (v0.6.0)
 
 - **`facade.py` — FastAPI HTTP façade server** — exposes the SQLite bus over

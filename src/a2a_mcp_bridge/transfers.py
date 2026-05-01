@@ -13,6 +13,7 @@ import os
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -232,7 +233,7 @@ def stage_file(
     )
 
 
-def load_manifest(transfer_id: str) -> dict:
+def load_manifest(transfer_id: str) -> dict[str, Any]:
     """Return the parsed meta.json for *transfer_id*.
 
     Raises:
@@ -244,7 +245,8 @@ def load_manifest(transfer_id: str) -> dict:
     if not meta_path.is_file():
         raise FileNotFoundError(transfer_id)
     try:
-        return json.loads(meta_path.read_text())
+        data: dict[str, Any] = json.loads(meta_path.read_text())
+        return data
     except json.JSONDecodeError as e:
         raise ValueError(f"TRANSFER_MANIFEST_CORRUPT: {e}") from e
 
