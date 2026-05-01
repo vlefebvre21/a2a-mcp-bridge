@@ -1,7 +1,8 @@
 # ADR-007 — File Transfer Primitive (Out-of-Band Payload)
 
-- **Status:** Proposed
+- **Status:** Accepted — implementation pending (v0.7.0 / v0.7.1)
 - **Date:** 2026-05-01
+- **Last updated:** 2026-05-01 (added §4.3 sleeping-nodes caveat and §5.3 auto-extend open question after Vincent review)
 - **Context window:** v0.6.2 → v0.7
 - **Authors:** VLBeauClaudeOpus (architect, `vlbeau-opus`), Vincent Lefebvre
 - **Related issue:** [#33](https://github.com/vlefebvre21/a2a-mcp-bridge/issues/33)
@@ -312,6 +313,15 @@ bypass LLM context). See §3.2.
 - **Background sweeper:** a module-level coroutine in the bridge
   iterates `transfer_dir` every `_TRANSFER_SWEEP_INTERVAL_S = 300 s`
   and removes expired transfers. Pattern mirrors `RateLimiter.prune_stale`.
+- **Sleeping nodes caveat (ADR-006 Mac/autossh pattern):** if the
+  recipient node is suspended (Mac closed lid, laptop asleep), its
+  gateway cannot subscribe or fetch. A transfer whose TTL expires while
+  the recipient sleeps is reaped server-side and is irrecoverable. The
+  24 h default is sized for overnight sleep (typical <12 h) but *not*
+  for weekend-long suspensions. Per-transfer `expires_in` lets the
+  sender bump to the 7 d hard cap when targeting a known-sleepy
+  recipient. See open question in §5.3 on whether to auto-extend on
+  recipient reappearance.
 
 ## 5. Consequences
 
@@ -358,6 +368,15 @@ bypass LLM context). See §3.2.
 - **Is `sha256` validated on `agent_fetch_file`?** Leaning: **yes, by
   default, toggle via `verify=False` kwarg**. The ~50 ms cost on a 100 MB
   file is negligible vs. silent corruption detection.
+- **Should the sweeper auto-extend `expires_at` when a recipient reappears
+  on the bus (e.g. Mac wakes up) but has un-fetched transfers?** Leaning:
+  **no for v0.7, yes for a future v0.7.x**. The cleanest mechanism is a
+  "touch-on-first-peek" — when `agent_inbox_peek` surfaces a
+  `kind=file_transfer` body whose `expires_at` is within 1 h of now, the
+  bridge bumps it by one TTL period. Avoids irrecoverable drops after
+  weekend suspensions without requiring senders to guess downtime.
+  Validates against the ADR-006 autossh/sleep pattern once we have
+  telemetry from the v0.7.0 rollout.
 
 ## 6. References
 
