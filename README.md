@@ -590,6 +590,11 @@ a2a-mcp-bridge register --all --hermes-profiles ~/.hermes/profiles
 | `A2A_RATE_LIMIT_SEND` | `60` | Requests/min limit for `/send`. |
 | `A2A_RATE_LIMIT_INBOX` | `120` | Requests/min limit for `/inbox` and `/inbox_peek`. |
 | `A2A_RATE_LIMIT_REGISTER` | `10` | Requests/min limit for `/register`. |
+| `A2A_TRANSFER_DIR` | `~/.a2a-transfers` | Staging directory for file transfers (ADR-007). Created with mode 0o700 if missing. |
+| `A2A_TRANSFER_DEFAULT_TTL_SECONDS` | `86400` | Default per-transfer TTL (24 h). |
+| `A2A_TRANSFER_MAX_TTL_SECONDS` | `604800` | Hard cap on any transfer TTL (7 d). |
+| `A2A_TRANSFER_MAX_SIZE_BYTES` | `104857600` | Max file size per transfer (100 MB). |
+| `A2A_TRANSFER_MAX_PENDING_PER_AGENT` | `50` | Max un-expired transfers a single sender may have open. |
 
 ## HTTP Facade (Remote Mode)
 
@@ -698,6 +703,30 @@ Rate limits are configured via environment variables (requests/minute):
 
 Set `A2A_RATE_LIMIT_GLOBAL=0` to disable rate limiting entirely (useful for
 development or when behind a reverse proxy that already handles it).
+
+### File transfers (ADR-007)
+
+Starting v0.7.0, agents can hand off arbitrary-size files without
+loading their contents into either LLM's context window.
+
+```python
+# sender
+agent_send_file(target="bob", file_path="/tmp/report.md", description="weekly")
+# → {"transfer_id": "...", "sha256": "...", "size": 28845, ...}
+
+# recipient (after the wake-up fires)
+inbox = agent_inbox()                           # gets the reference
+ref = json.loads(inbox[0]["body"])              # kind=file_transfer
+got = agent_fetch_file(ref["transfer_id"])
+# → {"path": "/home/vince/.a2a-transfers/<uuid>/<sha>_report.md", ...}
+
+# recipient reads the file with its own read_file tool, then:
+agent_delete_file(ref["transfer_id"])
+```
+
+Option A ships **same-machine only** — both sender and recipient
+must share the filesystem under `A2A_TRANSFER_DIR`. Cross-machine
+transfer via the HTTP façade lands in v0.7.1 (Option C).
 
 ### `HttpBusStore` client
 
