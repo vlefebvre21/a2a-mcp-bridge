@@ -457,6 +457,13 @@ def tool_agent_fetch_file(
     via the ``X-Transfer-SHA256`` header already checked inside
     ``HttpBusStore.download_transfer()``.
 
+    Known limitation (Phase C): ``description`` and ``expires_at`` are
+    returned as empty strings because the façade does not currently
+    expose these fields via the download endpoint headers.  This is
+    acceptable because the Hermes caller already has the full
+    ADR-007 message body (which contains both fields) from the
+    original ``agent_send_file`` notification.
+
     Phase A (local / Store): reads ``meta.json`` from the staging dir
     and resolves the on-disk path with ACL checks.
     """
@@ -465,45 +472,51 @@ def tool_agent_fetch_file(
         import tempfile as _tf
         from pathlib import Path as _Path
 
-        with _tf.TemporaryDirectory(prefix="a2a_fetch_") as tmp_dir:
-            try:
-                local_path = store.download_transfer(
-                    transfer_id, dest_dir=tmp_dir
-                )
-            except FileNotFoundError:
-                return {"error": {"code": "TRANSFER_NOT_FOUND", "message": transfer_id}}
-            except PermissionError as e:
-                return {"error": {"code": "TRANSFER_ACL_DENIED", "message": str(e)}}
-            except ValueError as e:
-                # SHA-256 mismatch from download_transfer header check
-                return {"error": {"code": "TRANSFER_HASH_MISMATCH", "message": str(e)}}
+        # Use mkdtemp (persistent) not TemporaryDirectory (context manager).
+        # TemporaryDirectory deletes the dir on __exit__, so the returned
+        # path would point to a deleted file.  mkdtemp creates the dir and
+        # leaves it alive — the caller is responsible for cleanup (the
+        # LLM tool that reads the file consumes it, then the OS reclaims
+        # the temp dir on reboot or via a janitor sweep).
+        tmp_dir = _tf.mkdtemp(prefix="a2a_fetch_")
+        try:
+            local_path = store.download_transfer(
+                transfer_id, dest_dir=tmp_dir
+            )
+        except FileNotFoundError:
+            return {"error": {"code": "TRANSFER_NOT_FOUND", "message": transfer_id}}
+        except PermissionError as e:
+            return {"error": {"code": "TRANSFER_ACL_DENIED", "message": str(e)}}
+        except ValueError as e:
+            # SHA-256 mismatch from download_transfer header check
+            return {"error": {"code": "TRANSFER_HASH_MISMATCH", "message": str(e)}}
 
-            # Build minimal metadata from the downloaded file itself.
-            # The façade already verified SHA-256 via X-Transfer-SHA256
-            # header inside download_transfer(); re-verify only when
-            # the caller explicitly requests it (belt-and-suspenders).
-            local_file = _Path(local_path)
-            file_stat = local_file.stat()
-            sha256_hex: str | None = None
+        # Build minimal metadata from the downloaded file itself.
+        # The façade already verified SHA-256 via X-Transfer-SHA256
+        # header inside download_transfer(); re-verify only when
+        # the caller explicitly requests it (belt-and-suspenders).
+        local_file = _Path(local_path)
+        file_stat = local_file.stat()
+        sha256_hex: str | None = None
 
-            if verify:
-                import hashlib as _h
+        if verify:
+            import hashlib as _h
 
-                h = _h.sha256()
-                with open(local_path, "rb") as f:
-                    for chunk in iter(lambda: f.read(64 * 1024), b""):
-                        h.update(chunk)
-                sha256_hex = h.hexdigest()
+            h = _h.sha256()
+            with open(local_path, "rb") as f:
+                for chunk in iter(lambda: f.read(64 * 1024), b""):
+                    h.update(chunk)
+            sha256_hex = h.hexdigest()
 
-            return {
-                "transfer_id": transfer_id,
-                "path": str(local_path),
-                "size": file_stat.st_size,
-                "sha256": sha256_hex or "",
-                "filename": local_file.name,
-                "description": "",
-                "expires_at": "",
-            }
+        return {
+            "transfer_id": transfer_id,
+            "path": str(local_path),
+            "size": file_stat.st_size,
+            "sha256": sha256_hex or "",
+            "filename": local_file.name,
+            "description": "",
+            "expires_at": "",
+        }
 
     # --- Phase A: local file scheme (manifest on disk) ---
     try:

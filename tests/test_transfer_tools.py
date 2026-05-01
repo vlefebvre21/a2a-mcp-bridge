@@ -174,21 +174,28 @@ def test_fetch_file_http_scheme(
     (on the Mac) does NOT have a local meta.json for the transfer.
     The HttpBusStore short-circuits load_manifest() and goes directly
     to download_transfer(), which queries the façade's TransferStore.
+
+    The mock respects the real contract of download_transfer:
+    it writes the file into dest_dir (not some external path),
+    exactly as bus_store.py line 458 does:
+        dest_path = Path(dest_dir) / filename
     """
     mock_store = _make_mock_http_store()
     tid = "remote-fetch-tid"
-
-    # Prepare a local file that download_transfer will "return"
-    # (simulating the file fetched from the remote façade).
-    fetched_dir = tmp_path / "fetched"
-    fetched_dir.mkdir(parents=True, exist_ok=True)
-    fetched_file = fetched_dir / "data.bin"
-    fetched_file.write_bytes(b"x" * 99)
+    content = b"x" * 99
     import hashlib
 
-    real_sha = hashlib.sha256(b"x" * 99).hexdigest()
+    real_sha = hashlib.sha256(content).hexdigest()
+    filename = "data.bin"
 
-    mock_store.download_transfer.return_value = str(fetched_file)
+    def _download(transfer_id: str, dest_dir: str = "") -> str:
+        """Mock that respects the download_transfer contract:
+        writes the file into dest_dir/filename and returns the path."""
+        dest_path = Path(dest_dir) / filename
+        dest_path.write_bytes(content)
+        return str(dest_path)
+
+    mock_store.download_transfer.side_effect = _download
 
     result = tool_agent_fetch_file(
         mock_store,
@@ -205,10 +212,14 @@ def test_fetch_file_http_scheme(
 
     assert "error" not in result
     assert result["transfer_id"] == tid
-    assert result["filename"] == "data.bin"
-    assert result["path"] == str(fetched_file)
+    assert result["filename"] == filename
     assert result["sha256"] == real_sha
     assert result["size"] == 99
+
+    # C2 non-regression: the returned path must point to an existing file
+    # (TemporaryDirectory would have deleted it; mkdtemp preserves it).
+    assert Path(result["path"]).exists()
+    assert Path(result["path"]).read_bytes() == content
 
 
 # ---------------------------------------------------------------------------
@@ -229,6 +240,9 @@ def test_fetch_file_http_no_local_manifest(
     there is no local staging dir, so load_manifest() raised
     FileNotFoundError → TRANSFER_NOT_FOUND.  The fix short-circuits:
     HttpBusStore → download_transfer() directly, no manifest lookup.
+
+    The mock respects the real contract of download_transfer:
+    it writes the file into dest_dir/filename (not an external path).
     """
     mock_store = _make_mock_http_store()
     tid = "cross-host-tid"
@@ -237,12 +251,17 @@ def test_fetch_file_http_no_local_manifest(
     # is exactly the cross-host scenario (Mac has no local staging).
     assert not (transfer_dir / tid / "meta.json").exists()
 
-    # Simulate the downloaded file
-    fetched_file = tmp_path / "downloaded" / "payload.csv"
-    fetched_file.parent.mkdir(parents=True, exist_ok=True)
-    fetched_file.write_text("a,b,c\n1,2,3\n")
+    content = "a,b,c\n1,2,3\n"
+    filename = "payload.csv"
 
-    mock_store.download_transfer.return_value = str(fetched_file)
+    def _download(transfer_id: str, dest_dir: str = "") -> str:
+        """Mock that respects the download_transfer contract:
+        writes the file into dest_dir/filename and returns the path."""
+        dest_path = Path(dest_dir) / filename
+        dest_path.write_text(content)
+        return str(dest_path)
+
+    mock_store.download_transfer.side_effect = _download
 
     result = tool_agent_fetch_file(
         mock_store,
@@ -253,8 +272,11 @@ def test_fetch_file_http_no_local_manifest(
 
     assert "error" not in result
     assert result["transfer_id"] == tid
-    assert result["filename"] == "payload.csv"
-    assert result["path"] == str(fetched_file)
+    assert result["filename"] == filename
+
+    # C2 non-regression: returned path must exist on disk
+    assert Path(result["path"]).exists()
+    assert Path(result["path"]).read_text() == content
 
 
 # ---------------------------------------------------------------------------
