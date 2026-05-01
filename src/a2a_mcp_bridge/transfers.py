@@ -1,8 +1,13 @@
-"""File transfer primitive (ADR-007 Option A) — same-machine staging dir.
+"""File transfer primitive (ADR-007 Phase A) — same-machine staging dir.
 
 Implements the ``agent_send_file`` / ``agent_fetch_file`` / ``agent_delete_file``
 flow described in ADR-007 §4. Wire protocol and security model are
 frozen by that ADR — do not change without amending it.
+
+Source of truth: Phase A uses on-disk ``meta.json`` files in the staging
+dir (``~/.a2a-transfers/<transfer_id>/meta.json``).  Phase C (cross-host
+via façade) uses ``TransferStore`` SQLite instead — see ``transfer_store.py``.
+This module is NOT consulted by Phase C agents.
 """
 from __future__ import annotations
 

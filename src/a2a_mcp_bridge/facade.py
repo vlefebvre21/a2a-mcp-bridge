@@ -6,15 +6,22 @@ application can be instantiated with real or faked backend dependencies.
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import hmac
 import logging
+import os
+import shutil
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC
+from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -22,6 +29,8 @@ from . import __version__
 from .rate_limit import FacadeRateLimiters, build_limiters, ratelimit_middleware_factory
 from .signals import SignalDir
 from .store import Store
+from .transfer_store import TransferStore
+from .transfers import _env_int, is_safe_path, resolve_transfer_dir
 from .wake import WebhookWaker
 
 logger = logging.getLogger(__name__)
@@ -244,10 +253,29 @@ def create_app(
     except Exception:
         store.close()
         raise
+    xfer_store = TransferStore(str(Path(db_path).parent / "transfers.db"), check_same_thread=False)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        async def _transfer_sweep_loop() -> None:
+            while True:
+                await asyncio.sleep(300)  # 5 minutes
+                expired = xfer_store.list_expired()
+                for t in expired:
+                    try:
+                        xfer_store.delete(t["id"])
+                        dir_path = resolve_transfer_dir() / t["id"]
+                        if dir_path.is_dir() and is_safe_path(dir_path):
+                            shutil.rmtree(dir_path, ignore_errors=True)
+                    except Exception:
+                        logger.warning("sweep: failed to delete %s", t["id"], exc_info=True)
+                if expired:
+                    logger.info("transfer_sweep removed %d expired transfer(s)", len(expired))
+
+        sweep_task = asyncio.create_task(_transfer_sweep_loop())
         yield
+        sweep_task.cancel()
+        xfer_store.close()
         store.close()
 
     app = FastAPI(
@@ -319,5 +347,147 @@ def create_app(
         return await anyio.to_thread.run_sync(
             lambda: subscribe_handler(store, signal_dir, body)
         )
+
+    # -------------------------------------------------------
+    # File transfer endpoints
+    # -------------------------------------------------------
+
+    max_ttl_hours = _env_int("A2A_TRANSFER_MAX_TTL_HOURS", 168)
+    max_pending = _env_int("A2A_TRANSFER_MAX_PENDING", 50)
+    max_size_bytes = _env_int("A2A_TRANSFER_MAX_SIZE_MB", 100) * 1024 * 1024
+
+    @app.post("/transfers/upload")
+    async def transfer_upload(
+        request: Request,
+        file: UploadFile = File(...),  # noqa: B008
+        sender: str = Form(...),
+        recipient: str = Form(...),
+        ttl_hours: int = Form(default=24),
+    ) -> JSONResponse:
+        _check_auth(request, api_key)
+
+        if ttl_hours > max_ttl_hours:
+            return JSONResponse(
+                {"error": {"code": "TTL_EXCEEDED", "message": f"ttl_hours exceeds maximum ({max_ttl_hours})"}},
+                status_code=400,
+            )
+
+        if xfer_store.count_pending(sender) >= max_pending:
+            return JSONResponse(
+                {"error": {"code": "TOO_MANY_PENDING", "message": f"sender {sender} has too many pending transfers"}},
+                status_code=429,
+            )
+
+        transfer_id = str(uuid.uuid4())
+        transfer_dir = resolve_transfer_dir() / transfer_id
+        transfer_dir.mkdir(parents=True, exist_ok=True)
+
+        tmp_path = transfer_dir / ".tmp"
+        sha = hashlib.sha256()
+        total_size = 0
+
+        with open(tmp_path, "wb") as f:
+            while True:
+                chunk = await file.read(65536)  # 64KB
+                if not chunk:
+                    break
+                total_size += len(chunk)
+                if total_size > max_size_bytes:
+                    # Clean up partial upload
+                    tmp_path.unlink(missing_ok=True)
+                    return JSONResponse(
+                        {"error": {"code": "PAYLOAD_TOO_LARGE", "message": "file exceeds maximum allowed size"}},
+                        status_code=413,
+                    )
+                sha.update(chunk)
+                f.write(chunk)
+
+        safe_filename = os.path.basename(file.filename or "upload")
+        final_path = transfer_dir / safe_filename
+        tmp_path.rename(final_path)
+        os.chmod(final_path, 0o600)
+
+        from datetime import datetime, timedelta
+
+        expires_at = datetime.now(UTC) + timedelta(hours=ttl_hours)
+
+        xfer_store.create(
+            id=transfer_id,
+            sender_id=sender,
+            recipient_id=recipient,
+            filename=safe_filename,
+            size_bytes=total_size,
+            sha256=sha.hexdigest(),
+            staged_path=str(final_path),
+            expires_at=expires_at.isoformat(),
+        )
+
+        return JSONResponse({
+            "transfer_id": transfer_id,
+            "sha256": sha.hexdigest(),
+            "size": total_size,
+            "filename": safe_filename,
+            "expires_at": expires_at.isoformat(),
+        })
+
+    @app.get("/transfers/{transfer_id}")
+    async def transfer_download(request: Request, transfer_id: str) -> Response:
+        _check_auth(request, api_key)
+
+        record = xfer_store.get(transfer_id)
+        if record is None:
+            return JSONResponse(
+                {"error": {"code": "NOT_FOUND", "message": "transfer not found"}},
+                status_code=404,
+            )
+
+        agent_id = request.headers.get("X-Agent-Id") or request.query_params.get("agent_id", "")
+        if agent_id != record["recipient_id"]:
+            return JSONResponse(
+                {"error": {"code": "FORBIDDEN", "message": "agent_id is not the transfer recipient"}},
+                status_code=403,
+            )
+
+        file_path = resolve_transfer_dir() / transfer_id / os.path.basename(record["filename"])
+        if not file_path.is_file():
+            return JSONResponse(
+                {"error": {"code": "NOT_FOUND", "message": "staged file missing on disk"}},
+                status_code=404,
+            )
+
+        xfer_store.mark_fetched(transfer_id)
+
+        return FileResponse(
+            file_path,
+            headers={
+                "X-Transfer-SHA256": record["sha256"],
+                "Content-Disposition": f'attachment; filename="{record["filename"]}"',
+            },
+        )
+
+    @app.delete("/transfers/{transfer_id}")
+    async def transfer_delete(request: Request, transfer_id: str) -> Response:
+        _check_auth(request, api_key)
+
+        record = xfer_store.get(transfer_id)
+        if record is None:
+            return JSONResponse(
+                {"error": {"code": "NOT_FOUND", "message": "transfer not found"}},
+                status_code=404,
+            )
+
+        agent_id = request.headers.get("X-Agent-Id") or request.query_params.get("agent_id", "")
+        if agent_id != record["sender_id"] and agent_id != record["recipient_id"]:
+            return JSONResponse(
+                {"error": {"code": "FORBIDDEN", "message": "agent_id is not sender or recipient"}},
+                status_code=403,
+            )
+
+        xfer_store.delete(transfer_id)
+        dir_path = resolve_transfer_dir() / transfer_id
+        if dir_path.is_dir() and is_safe_path(dir_path):
+            shutil.rmtree(dir_path, ignore_errors=True)
+
+        return Response(status_code=204)
 
     return app
