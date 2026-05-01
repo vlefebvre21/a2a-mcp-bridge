@@ -15,10 +15,10 @@ from a2a_mcp_bridge.wake import WebhookWaker
 # ---------------------------------------------------------------------------
 
 def test_normalize_intent_none_returns_default() -> None:
-    assert normalize_intent(None) == ("triage", False)
+    assert normalize_intent(None) == ("execute", False)
     assert normalize_intent("fyi") == ("fyi", False)
     assert normalize_intent("execute") == ("execute", False)
-    assert normalize_intent("bogus-xyz") == ("triage", True)
+    assert normalize_intent("bogus-xyz") == ("execute", True)
 
 
 # ---------------------------------------------------------------------------
@@ -57,7 +57,7 @@ def test_send_default_intent_triggers_wake(_tool_store: Store) -> None:
         _tool_store, "sender", "receiver", "hello", waker=waker
     )
 
-    assert result["intent"] == "triage"
+    assert result["intent"] == "execute"
     waker.wake.assert_called_once_with("receiver", sender_id="sender")
 
 
@@ -78,10 +78,10 @@ def test_send_intent_fyi_skips_wake(_tool_store: Store) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test 5: unknown intent downgrades to triage with WARNING log
+# Test 5: unknown intent downgrades to default with WARNING log
 # ---------------------------------------------------------------------------
 
-def test_send_unknown_intent_downgrades_to_triage_and_logs_warning(
+def test_send_unknown_intent_downgrades_to_default_and_logs_warning(
     _tool_store: Store, caplog: pytest.LogCaptureFixture
 ) -> None:
     waker = MagicMock(spec=WebhookWaker)
@@ -91,7 +91,7 @@ def test_send_unknown_intent_downgrades_to_triage_and_logs_warning(
         waker=waker, intent="bogus-xyz"
     )
 
-    assert result["intent"] == "triage"
+    assert result["intent"] == "execute"
     waker.wake.assert_called_once()
     assert any("intent_downgraded" in r.message for r in caplog.records)
 

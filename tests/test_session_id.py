@@ -177,10 +177,10 @@ class TestSessionIdBackwardCompat:
     def test_existing_inbox_shape_unchanged_without_session_id(
         self, store: Store
     ) -> None:
-        """Pre-v0.5 callers see ``sender_session_id: None`` + ``intent: 'triage'``.
+        """Pre-v0.5 callers see ``sender_session_id: None`` + ``intent: 'execute'``.
 
         Shape updated for ADR-002: ``intent`` is now part of the canonical
-        inbox dict. Omitted caller ``intent`` defaults to ``'triage'``, so
+        inbox dict. Omitted caller ``intent`` defaults to ``'execute'``, so
         backward-compat senders still see a stable (if enriched) shape.
         """
         _register(store, "alice", "bob")
@@ -200,4 +200,4 @@ class TestSessionIdBackwardCompat:
         }
         assert set(m.keys()) == expected_keys
         assert m["sender_session_id"] is None
-        assert m["intent"] == "triage"
+        assert m["intent"] == "execute"
