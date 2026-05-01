@@ -56,3 +56,40 @@ def test_is_safe_path_rejects_traversal(tmp_path: Path, monkeypatch: pytest.Monk
     assert is_safe_path(tmp_path / "abc" / "file.md") is True
     assert is_safe_path(Path("/etc/passwd")) is False
     assert is_safe_path(tmp_path / ".." / "file.md") is False  # normalises up
+
+
+def test_stage_file_creates_staged_copy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("A2A_TRANSFER_DIR", str(tmp_path))
+    src = tmp_path / "source.md"
+    src.write_text("hello world\n")
+
+    from a2a_mcp_bridge.transfers import stage_file
+
+    rec = stage_file(src, sender_id="alice", filename="source.md")
+    assert rec.size == len(b"hello world\n")
+    assert rec.filename == "source.md"
+    assert Path(rec.locator_path).is_file()
+    assert Path(rec.locator_path).read_bytes() == b"hello world\n"
+    # File mode 0o600
+    assert oct(Path(rec.locator_path).stat().st_mode)[-3:] == "600"
+
+
+def test_stage_file_rejects_too_large(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("A2A_TRANSFER_DIR", str(tmp_path))
+    monkeypatch.setenv("A2A_TRANSFER_MAX_SIZE_BYTES", "10")
+
+    src = tmp_path / "big.bin"
+    src.write_bytes(b"x" * 100)
+
+    from a2a_mcp_bridge.transfers import stage_file
+
+    with pytest.raises(ValueError, match="TRANSFER_TOO_LARGE"):
+        stage_file(src, sender_id="alice", filename="big.bin")
+
+
+def test_stage_file_rejects_source_outside_fs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("A2A_TRANSFER_DIR", str(tmp_path))
+    from a2a_mcp_bridge.transfers import stage_file
+
+    with pytest.raises(FileNotFoundError):
+        stage_file(tmp_path / "ghost.md", sender_id="alice", filename="ghost.md")

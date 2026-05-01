@@ -6,9 +6,11 @@ frozen by that ADR — do not change without amending it.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -77,3 +79,78 @@ def is_safe_path(candidate: Path) -> bool:
         return False
     base_sep = base if base.endswith(os.sep) else base + os.sep
     return real == base or real.startswith(base_sep)
+
+
+@dataclass(frozen=True)
+class TransferRecord:
+    """Immutable record of a staged transfer (returned by stage_file)."""
+    transfer_id: str
+    sender_id: str
+    filename: str
+    size: int
+    sha256: str
+    locator_path: str   # absolute path, scheme=file
+    created_at: float   # time.time() (wall clock, for expiry math)
+
+
+def _hash_and_copy(src: Path, dest: Path) -> tuple[str, int]:
+    """Copy *src* to *dest* (atomic rename) while computing sha256 + size.
+
+    Writes to ``<dest>.tmp`` then renames. Flushes and fsyncs before rename.
+    Creates parent dirs with mode 0o700, the staged file with mode 0o600.
+    """
+    dest.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    tmp = dest.parent / f".tmp.{dest.name}"
+    h = hashlib.sha256()
+    size = 0
+    with open(src, "rb") as fin, open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as fout:
+        while True:
+            chunk = fin.read(64 * 1024)
+            if not chunk:
+                break
+            h.update(chunk)
+            size += len(chunk)
+            fout.write(chunk)
+        fout.flush()
+        os.fsync(fout.fileno())
+    os.rename(tmp, dest)
+    return h.hexdigest(), size
+
+
+def stage_file(source: Path, *, sender_id: str, filename: str) -> TransferRecord:
+    """Copy *source* into the staging dir and return a :class:`TransferRecord`.
+
+    Raises:
+        FileNotFoundError: if *source* does not exist.
+        ValueError: ``TRANSFER_TOO_LARGE: ...`` if the file exceeds
+            ``A2A_TRANSFER_MAX_SIZE_BYTES``.
+    """
+    import time as _time
+
+    if not source.is_file():
+        raise FileNotFoundError(source)
+
+    max_size = _env_int("A2A_TRANSFER_MAX_SIZE_BYTES", _DEFAULT_MAX_SIZE_BYTES)
+    src_size = source.stat().st_size
+    if src_size > max_size:
+        raise ValueError(
+            f"TRANSFER_TOO_LARGE: {src_size} bytes exceeds limit {max_size}"
+        )
+
+    tid = new_transfer_id()
+    # Stage with a first pass to get sha256, then rename to canonical name.
+    # Two-step because the canonical filename includes sha256[:16].
+    staging_tmp = resolve_transfer_dir() / tid / f".staging_{filename}"
+    sha, actual_size = _hash_and_copy(source, staging_tmp)
+    final = transfer_path(tid, sha, filename)
+    os.rename(staging_tmp, final)
+
+    return TransferRecord(
+        transfer_id=tid,
+        sender_id=sender_id,
+        filename=filename,
+        size=actual_size,
+        sha256=sha,
+        locator_path=str(final),
+        created_at=_time.time(),
+    )
