@@ -126,3 +126,42 @@ def test_stage_file_quota_enforced(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     stage_file(src, sender_id="alice", filename="b.md", recipient_id="bob")
     with pytest.raises(ValueError, match="TRANSFER_QUOTA_EXCEEDED"):
         stage_file(src, sender_id="alice", filename="c.md", recipient_id="bob")
+
+
+def test_load_manifest_roundtrip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("A2A_TRANSFER_DIR", str(tmp_path))
+    src = tmp_path / "s.md"
+    src.write_text("data")
+
+    from a2a_mcp_bridge.transfers import load_manifest, stage_file
+
+    rec = stage_file(src, sender_id="alice", filename="s.md", recipient_id="bob")
+    m = load_manifest(rec.transfer_id)
+    assert m["sender_id"] == "alice"
+    assert m["recipient_id"] == "bob"
+    assert m["sha256"] == rec.sha256
+
+
+def test_resolve_locator_path_enforces_acl(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("A2A_TRANSFER_DIR", str(tmp_path))
+    src = tmp_path / "s.md"
+    src.write_text("secret")
+
+    from a2a_mcp_bridge.transfers import resolve_locator_path, stage_file
+
+    rec = stage_file(src, sender_id="alice", filename="s.md", recipient_id="bob")
+    # Recipient can fetch
+    assert resolve_locator_path(rec.transfer_id, caller_id="bob") == Path(rec.locator_path)
+    # Sender can fetch (useful for resend/verify)
+    assert resolve_locator_path(rec.transfer_id, caller_id="alice") == Path(rec.locator_path)
+    # Random third party cannot
+    with pytest.raises(PermissionError):
+        resolve_locator_path(rec.transfer_id, caller_id="eve")
+
+
+def test_resolve_locator_path_unknown_id(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("A2A_TRANSFER_DIR", str(tmp_path))
+    from a2a_mcp_bridge.transfers import resolve_locator_path
+
+    with pytest.raises(FileNotFoundError):
+        resolve_locator_path("nonexistent", caller_id="alice")

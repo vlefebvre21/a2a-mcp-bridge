@@ -230,3 +230,40 @@ def stage_file(
         created_at=rec_created_at,
         expires_at=expires_at,
     )
+
+
+def load_manifest(transfer_id: str) -> dict:
+    """Return the parsed meta.json for *transfer_id*.
+
+    Raises:
+        FileNotFoundError: transfer_id unknown.
+        ValueError: manifest JSON malformed.
+    """
+    base = resolve_transfer_dir()
+    meta_path = base / transfer_id / "meta.json"
+    if not meta_path.is_file():
+        raise FileNotFoundError(transfer_id)
+    try:
+        return json.loads(meta_path.read_text())
+    except json.JSONDecodeError as e:
+        raise ValueError(f"TRANSFER_MANIFEST_CORRUPT: {e}") from e
+
+
+def resolve_locator_path(transfer_id: str, *, caller_id: str) -> Path:
+    """Return the on-disk path for *transfer_id* after ACL check.
+
+    Only the sender or recipient declared in the manifest may resolve.
+    The returned path is also re-checked with :func:`is_safe_path`.
+
+    Raises:
+        FileNotFoundError: unknown transfer_id.
+        PermissionError: caller is neither sender nor recipient.
+        ValueError: locator path escapes the transfer dir (corrupt manifest).
+    """
+    m = load_manifest(transfer_id)
+    if caller_id not in (m.get("sender_id"), m.get("recipient_id")):
+        raise PermissionError(f"TRANSFER_ACL_DENIED: {caller_id} not authorised for {transfer_id}")
+    path = Path(m["locator"]["path"])
+    if not is_safe_path(path):
+        raise ValueError(f"TRANSFER_UNSAFE_PATH: {path}")
+    return path
