@@ -11,6 +11,12 @@ from .intents import DEFAULT_INTENT, normalize_intent, wakes
 from .logging_ext import hash_body, log_event
 from .models import Message
 from .signals import SignalDir
+from .transfers import (
+    delete_transfer,
+    load_manifest,
+    resolve_locator_path,
+    stage_file,
+)
 from .wake import WebhookWaker
 
 logger = logging.getLogger("a2a_mcp_bridge.tools")
@@ -299,3 +305,145 @@ def _serialize_message(m: Message) -> dict[str, Any]:
         "sender_session_id": m.sender_session_id,
         "intent": getattr(m, "intent", DEFAULT_INTENT),
     }
+
+
+def tool_agent_send_file(
+    store: BusStore,
+    caller_id: str,
+    target: str,
+    file_path: str,
+    description: str = "",
+    expires_in: int | None = None,
+    signal_dir: SignalDir | None = None,
+    waker: WebhookWaker | None = None,
+    intent: str | None = None,
+) -> dict[str, Any]:
+    """Stage a local file and send its reference to *target* via A2A.
+
+    Wire protocol: ADR-007 §4.1. The file content never enters either
+    LLM's context window — only the reference message does.
+
+    Errors returned as ``{"error": {"code": ..., "message": ...}}``:
+        TRANSFER_SOURCE_NOT_FOUND, TRANSFER_TOO_LARGE,
+        TRANSFER_QUOTA_EXCEEDED, <delegated from agent_send>.
+    """
+    from pathlib import Path as _Path
+
+    src = _Path(file_path)
+    filename = src.name
+
+    try:
+        rec = stage_file(
+            src,
+            sender_id=caller_id,
+            recipient_id=target,
+            filename=filename,
+            description=description,
+            expires_in=expires_in,
+        )
+    except FileNotFoundError:
+        return {"error": {"code": "TRANSFER_SOURCE_NOT_FOUND", "message": str(src)}}
+    except ValueError as e:
+        code, _, msg = str(e).partition(":")
+        return {"error": {"code": code.strip(), "message": msg.strip()}}
+
+    # Build ADR-007 body. expires_at in manifest is epoch; serialise as ISO.
+    manifest = load_manifest(rec.transfer_id)
+    body_obj = {
+        "kind": "file_transfer",
+        "version": 1,
+        "transfer_id": rec.transfer_id,
+        "filename": rec.filename,
+        "size": rec.size,
+        "sha256": rec.sha256,
+        "description": description,
+        "expires_at": _iso_utc(manifest["expires_at"]),
+        "locator": {"scheme": "file", "path": rec.locator_path},
+    }
+    import json as _json
+
+    send_result = tool_agent_send(
+        store, caller_id, target, _json.dumps(body_obj),
+        metadata=None,
+        signal_dir=signal_dir,
+        waker=waker,
+        intent=intent,
+    )
+    if "error" in send_result:
+        # The file is staged but the message failed — surface both.
+        return {
+            "error": send_result["error"],
+            "transfer_id": rec.transfer_id,
+            "hint": "file staged but notification failed; caller may retry agent_send",
+        }
+    return {
+        "transfer_id": rec.transfer_id,
+        "sha256": rec.sha256,
+        "size": rec.size,
+        "filename": rec.filename,
+        "expires_at": body_obj["expires_at"],
+        "message_id": send_result.get("message_id"),
+    }
+
+
+def tool_agent_fetch_file(
+    store: BusStore,
+    caller_id: str,
+    transfer_id: str,
+    verify: bool = True,
+) -> dict[str, Any]:
+    """Resolve *transfer_id* to a local path for the caller.
+
+    The path is returned verbatim — the LLM tool that actually reads
+    the bytes (e.g. ``read_file``) is invoked separately. Validates
+    sha256 by default (cost ~50 ms per 100 MB).
+    """
+    try:
+        path = resolve_locator_path(transfer_id, caller_id=caller_id)
+        m = load_manifest(transfer_id)
+    except FileNotFoundError:
+        return {"error": {"code": "TRANSFER_NOT_FOUND", "message": transfer_id}}
+    except PermissionError as e:
+        return {"error": {"code": "TRANSFER_ACL_DENIED", "message": str(e)}}
+
+    if verify:
+        import hashlib as _h
+
+        h = _h.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(64 * 1024), b""):
+                h.update(chunk)
+        if h.hexdigest() != m["sha256"]:
+            return {"error": {"code": "TRANSFER_HASH_MISMATCH", "message": transfer_id}}
+
+    return {
+        "transfer_id": transfer_id,
+        "path": str(path),
+        "size": m["size"],
+        "sha256": m["sha256"],
+        "filename": m["filename"],
+        "description": m.get("description", ""),
+        "expires_at": _iso_utc(m["expires_at"]),
+    }
+
+
+def tool_agent_delete_file(
+    store: BusStore,
+    caller_id: str,
+    transfer_id: str,
+) -> dict[str, Any]:
+    """Explicit deletion. Caller must be sender or recipient."""
+    try:
+        delete_transfer(transfer_id, caller_id=caller_id)
+    except FileNotFoundError:
+        return {"error": {"code": "TRANSFER_NOT_FOUND", "message": transfer_id}}
+    except PermissionError as e:
+        return {"error": {"code": "TRANSFER_ACL_DENIED", "message": str(e)}}
+    return {"deleted": True, "transfer_id": transfer_id}
+
+
+def _iso_utc(epoch: float) -> str:
+    """Return ``epoch`` as ISO-8601 Z string."""
+    from datetime import UTC, datetime
+
+    return datetime.fromtimestamp(epoch, UTC).isoformat().replace("+00:00", "Z")
