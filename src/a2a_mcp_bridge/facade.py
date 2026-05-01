@@ -16,8 +16,10 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from . import __version__
+from .rate_limit import FacadeRateLimiters, build_limiters, ratelimit_middleware_factory
 from .signals import SignalDir
 from .store import Store
 from .wake import WebhookWaker
@@ -216,6 +218,7 @@ def create_app(
     api_key: str | None = None,
     signal_dir: SignalDir | None = None,
     waker: WebhookWaker | None = None,
+    limiters: FacadeRateLimiters | None = None,
 ) -> FastAPI:
     """Create the FastAPI application with the specified backend.
 
@@ -226,7 +229,15 @@ def create_app(
     is the caller's responsibility: ``HttpBusStore`` passes
     ``http://host:port`` as ``base_url``, and a reverse-proxy can
     mount this app at ``/bus`` if desired.
+
+    Args:
+        limiters: optional :class:`FacadeRateLimiters` for per-IP rate
+            limiting. When ``None`` (default), a fresh instance is built
+            from environment variables via :func:`build_limiters`. Pass
+            an explicit instance in tests to control limits.
     """
+    if limiters is None:
+        limiters = build_limiters()
     store = Store(db_path, signal_dir=signal_dir, check_same_thread=False)
     try:
         store.init_schema()
@@ -243,6 +254,13 @@ def create_app(
         title="a2a-mcp-bridge Bus Façade",
         version=__version__,
         lifespan=lifespan,
+    )
+
+    # Rate limiting middleware — applied before auth so flooders get 429
+    # regardless of credentials.
+    app.add_middleware(
+        BaseHTTPMiddleware,
+        dispatch=ratelimit_middleware_factory(limiters),
     )
 
     # Normalise Pydantic validation errors into our error envelope.

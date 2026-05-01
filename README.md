@@ -586,6 +586,10 @@ a2a-mcp-bridge register --all --hermes-profiles ~/.hermes/profiles
 | `A2A_FACADE_API_KEY` | *unset* | Bearer token for facade authentication. Used by `serve-facade` to require `Authorization: Bearer <key>` on protected endpoints. |
 | `A2A_LOG_JSON` | *unset* | If set to `1` / `true` / `yes`, every tool call emits a one-object-per-line JSON log record (schema: `ts`, `level`, `event`, `agent_id`, + `session_id`/`message_id`/`target`/`duration_ms`/`body_hash`/`error_code` when applicable). Unset keeps the pre-v0.5 plain-text format. Evaluated at import time — change requires a server restart. |
 | `A2A_LOG_LEVEL` | `INFO` | Log verbosity. |
+| `A2A_RATE_LIMIT_GLOBAL` | `200` | Requests/min global limit for `serve-facade`. Set `0` to disable. |
+| `A2A_RATE_LIMIT_SEND` | `60` | Requests/min limit for `/send`. |
+| `A2A_RATE_LIMIT_INBOX` | `120` | Requests/min limit for `/inbox` and `/inbox_peek`. |
+| `A2A_RATE_LIMIT_REGISTER` | `10` | Requests/min limit for `/register`. |
 
 ## HTTP Facade (Remote Mode)
 
@@ -669,6 +673,31 @@ All errors return `{"error": {"code": "...", "message": "..."}}` with an appropr
   WireGuard.
 - **Webhook wake-up** — the facade forwards wake-up webhooks to the wake
   registry, best-effort. Failures are logged and never block the response.
+
+### Rate limiting
+
+The façade enforces per-IP rate limiting since v0.6.2. A global limit
+applies to all endpoints; additional per-route caps apply to
+`/send`, `/inbox` (and `/inbox_peek`), and `/register`.
+
+When a limit is exceeded, the server returns **429 Too Many Requests**
+with a `Retry-After: 60` header and a structured error:
+
+```json
+{ "error": { "code": "RATE_LIMITED", "message": "Too many requests" } }
+```
+
+Rate limits are configured via environment variables (requests/minute):
+
+| Variable | Default | Applies to |
+|---|---|---|
+| `A2A_RATE_LIMIT_GLOBAL` | 200 | All endpoints |
+| `A2A_RATE_LIMIT_SEND` | 60 | `/send` |
+| `A2A_RATE_LIMIT_INBOX` | 120 | `/inbox`, `/inbox_peek` |
+| `A2A_RATE_LIMIT_REGISTER` | 10 | `/register` |
+
+Set `A2A_RATE_LIMIT_GLOBAL=0` to disable rate limiting entirely (useful for
+development or when behind a reverse proxy that already handles it).
 
 ### `HttpBusStore` client
 
