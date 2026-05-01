@@ -34,13 +34,6 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-# Global rate limit config, read once at import time.
-RATE_LIMIT_GLOBAL: int = _env_int("A2A_RATE_LIMIT_GLOBAL", 200)
-RATE_LIMIT_SEND: int = _env_int("A2A_RATE_LIMIT_SEND", 60)
-RATE_LIMIT_INBOX: int = _env_int("A2A_RATE_LIMIT_INBOX", 120)
-RATE_LIMIT_REGISTER: int = _env_int("A2A_RATE_LIMIT_REGISTER", 10)
-
-
 @dataclass
 class RateLimiter:
     """Sliding-window rate limiter keyed by an arbitrary string (usually IP).
@@ -162,14 +155,13 @@ def ratelimit_middleware_factory(
         app.add_middleware(BaseHTTPMiddleware, dispatch=ratelimit_middleware_factory(limiters))
     """
     if get_client_ip is None:
-        def get_client_ip(request: Any) -> str:
+        def _get_ip(request: Any) -> str:
             client = getattr(request, "client", None)
             if client is not None:
                 return client.host
-            # Fallback for tests that mock the request object.
             return str(getattr(request, "headers", {}).get("x-forwarded-for", "127.0.0.1"))
-    else:
-        get_client_ip = get_client_ip  # capture the injected callable
+
+        get_client_ip = _get_ip
 
     from starlette.middleware.base import RequestResponseEndpoint
     from starlette.requests import Request
