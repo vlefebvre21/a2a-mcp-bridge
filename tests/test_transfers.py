@@ -165,3 +165,51 @@ def test_resolve_locator_path_unknown_id(tmp_path: Path, monkeypatch: pytest.Mon
 
     with pytest.raises(FileNotFoundError):
         resolve_locator_path("nonexistent", caller_id="alice")
+
+
+def test_delete_transfer_scoped_to_parties(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("A2A_TRANSFER_DIR", str(tmp_path))
+    src = tmp_path / "s.md"
+    src.write_text("bye")
+
+    from a2a_mcp_bridge.transfers import delete_transfer, stage_file
+
+    rec = stage_file(src, sender_id="alice", filename="s.md", recipient_id="bob")
+
+    # Eve can't delete
+    with pytest.raises(PermissionError):
+        delete_transfer(rec.transfer_id, caller_id="eve")
+    assert Path(rec.locator_path).is_file()
+
+    # Bob can (recipient)
+    delete_transfer(rec.transfer_id, caller_id="bob")
+    assert not Path(rec.locator_path).exists()
+    assert not (tmp_path / rec.transfer_id).exists()
+
+
+def test_sweep_removes_expired(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("A2A_TRANSFER_DIR", str(tmp_path))
+    src = tmp_path / "s.md"
+    src.write_text("data")
+
+    from a2a_mcp_bridge.transfers import _transfer_sweep, stage_file
+
+    # TTL in the past
+    rec = stage_file(src, sender_id="alice", filename="s.md", recipient_id="bob", expires_in=-1)
+    assert Path(rec.locator_path).is_file()
+
+    removed = _transfer_sweep()
+    assert removed == 1
+    assert not Path(rec.locator_path).exists()
+
+
+def test_sweep_keeps_fresh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("A2A_TRANSFER_DIR", str(tmp_path))
+    src = tmp_path / "s.md"
+    src.write_text("data")
+
+    from a2a_mcp_bridge.transfers import _transfer_sweep, stage_file
+
+    rec = stage_file(src, sender_id="alice", filename="s.md", recipient_id="bob", expires_in=3600)
+    assert _transfer_sweep() == 0
+    assert Path(rec.locator_path).is_file()

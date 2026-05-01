@@ -267,3 +267,55 @@ def resolve_locator_path(transfer_id: str, *, caller_id: str) -> Path:
     if not is_safe_path(path):
         raise ValueError(f"TRANSFER_UNSAFE_PATH: {path}")
     return path
+
+
+def delete_transfer(transfer_id: str, *, caller_id: str) -> None:
+    """Delete a staged transfer + manifest. Scoped to sender or recipient.
+
+    Raises:
+        FileNotFoundError: unknown transfer_id.
+        PermissionError: caller is neither sender nor recipient.
+    """
+    import shutil
+
+    m = load_manifest(transfer_id)  # raises FileNotFoundError
+    if caller_id not in (m.get("sender_id"), m.get("recipient_id")):
+        raise PermissionError(f"TRANSFER_ACL_DENIED: {caller_id} cannot delete {transfer_id}")
+    directory = resolve_transfer_dir() / transfer_id
+    if is_safe_path(directory):
+        shutil.rmtree(directory, ignore_errors=False)
+
+
+def _transfer_sweep() -> int:
+    """Delete every transfer whose manifest says it's expired.
+
+    Returns:
+        Number of transfers deleted.
+    """
+    import shutil
+    import time as _time
+
+    base = resolve_transfer_dir()
+    now = _time.time()
+    removed = 0
+    if not base.is_dir():
+        return 0
+    for child in base.iterdir():
+        if not child.is_dir():
+            continue
+        meta_path = child / "meta.json"
+        if not meta_path.is_file():
+            continue
+        try:
+            m = json.loads(meta_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            logger.warning("transfer_sweep: corrupt manifest at %s, removing", child)
+            shutil.rmtree(child, ignore_errors=True)
+            removed += 1
+            continue
+        if float(m.get("expires_at", 0.0)) <= now:
+            shutil.rmtree(child, ignore_errors=True)
+            removed += 1
+    if removed:
+        logger.info("transfer_sweep removed %d expired transfer(s)", removed)
+    return removed
