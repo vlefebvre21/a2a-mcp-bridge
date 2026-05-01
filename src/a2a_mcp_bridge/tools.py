@@ -6,7 +6,7 @@ import logging
 import time
 from typing import Any
 
-from .bus_store import BusStore
+from .bus_store import BusStore, HttpBusStore
 from .intents import DEFAULT_INTENT, normalize_intent, wakes
 from .logging_ext import hash_body, log_event
 from .models import Message
@@ -332,6 +332,58 @@ def tool_agent_send_file(
     src = _Path(file_path)
     filename = src.name
 
+    if isinstance(store, HttpBusStore):
+        # --- Phase C: remote upload via HttpBusStore ---
+        try:
+            upload = store.upload_transfer(
+                file_path=file_path,
+                sender_id=caller_id,
+                recipient_id=target,
+                description=description,
+                expires_in=expires_in,
+            )
+        except FileNotFoundError:
+            return {"error": {"code": "TRANSFER_SOURCE_NOT_FOUND", "message": str(src)}}
+        except ValueError as e:
+            code, _, msg = str(e).partition(":")
+            return {"error": {"code": code.strip(), "message": msg.strip()}}
+
+        body_obj = {
+            "kind": "file_transfer",
+            "version": 1,
+            "transfer_id": upload["transfer_id"],
+            "filename": upload["filename"],
+            "size": upload["size"],
+            "sha256": upload["sha256"],
+            "description": description,
+            "expires_at": _iso_utc(upload["expires_at"]),
+            "locator": {"scheme": "http", "url": upload["locator"]["url"]},
+        }
+        import json as _json
+
+        send_result = tool_agent_send(
+            store, caller_id, target, _json.dumps(body_obj),
+            metadata=None,
+            signal_dir=signal_dir,
+            waker=waker,
+            intent=intent,
+        )
+        if "error" in send_result:
+            return {
+                "error": send_result["error"],
+                "transfer_id": upload["transfer_id"],
+                "hint": "file uploaded but notification failed; caller may retry agent_send",
+            }
+        return {
+            "transfer_id": upload["transfer_id"],
+            "sha256": upload["sha256"],
+            "size": upload["size"],
+            "filename": upload["filename"],
+            "expires_at": body_obj["expires_at"],
+            "message_id": send_result.get("message_id"),
+        }
+
+    # --- Phase A: local stage_file ---
     try:
         rec = stage_file(
             src,
@@ -399,8 +451,58 @@ def tool_agent_fetch_file(
     sha256 by default (cost ~50 ms per 100 MB).
     """
     try:
-        path = resolve_locator_path(transfer_id, caller_id=caller_id)
         m = load_manifest(transfer_id)
+    except FileNotFoundError:
+        return {"error": {"code": "TRANSFER_NOT_FOUND", "message": transfer_id}}
+    except PermissionError as e:
+        return {"error": {"code": "TRANSFER_ACL_DENIED", "message": str(e)}}
+
+    locator_scheme = m.get("locator", {}).get("scheme", "file")
+
+    if locator_scheme == "http":
+        # --- Phase C: remote download via HttpBusStore ---
+        if not isinstance(store, HttpBusStore):
+            return {
+                "error": {
+                    "code": "TRANSFER_SCHEME_MISMATCH",
+                    "message": "http locator but store is not HttpBusStore",
+                }
+            }
+        import tempfile as _tf
+
+        with _tf.TemporaryDirectory(prefix="a2a_fetch_") as tmp_dir:
+            try:
+                local_path = store.download_transfer(
+                    transfer_id, dest_dir=tmp_dir
+                )
+            except FileNotFoundError:
+                return {"error": {"code": "TRANSFER_NOT_FOUND", "message": transfer_id}}
+            except PermissionError as e:
+                return {"error": {"code": "TRANSFER_ACL_DENIED", "message": str(e)}}
+
+            if verify:
+                import hashlib as _h
+
+                h = _h.sha256()
+                with open(local_path, "rb") as f:
+                    for chunk in iter(lambda: f.read(64 * 1024), b""):
+                        h.update(chunk)
+                if h.hexdigest() != m["sha256"]:
+                    return {"error": {"code": "TRANSFER_HASH_MISMATCH", "message": transfer_id}}
+
+            return {
+                "transfer_id": transfer_id,
+                "path": str(local_path),
+                "size": m["size"],
+                "sha256": m["sha256"],
+                "filename": m["filename"],
+                "description": m.get("description", ""),
+                "expires_at": _iso_utc(m["expires_at"]),
+            }
+
+    # --- Phase A: local file scheme ---
+    try:
+        path = resolve_locator_path(transfer_id, caller_id=caller_id)
     except FileNotFoundError:
         return {"error": {"code": "TRANSFER_NOT_FOUND", "message": transfer_id}}
     except PermissionError as e:
@@ -433,6 +535,16 @@ def tool_agent_delete_file(
     transfer_id: str,
 ) -> dict[str, Any]:
     """Explicit deletion. Caller must be sender or recipient."""
+    if isinstance(store, HttpBusStore):
+        # --- Phase C: remote deletion via HttpBusStore ---
+        try:
+            return store.delete_transfer(transfer_id, caller_id=caller_id)
+        except FileNotFoundError:
+            return {"error": {"code": "TRANSFER_NOT_FOUND", "message": transfer_id}}
+        except PermissionError as e:
+            return {"error": {"code": "TRANSFER_ACL_DENIED", "message": str(e)}}
+
+    # --- Phase A: local deletion ---
     try:
         delete_transfer(transfer_id, caller_id=caller_id)
     except FileNotFoundError:

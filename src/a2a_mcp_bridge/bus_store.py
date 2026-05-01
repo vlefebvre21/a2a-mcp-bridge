@@ -12,8 +12,11 @@ over runtime checks.
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import tempfile
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from .models import AgentRecord, Message, SendResult
@@ -368,6 +371,132 @@ class HttpBusStore:
         except self._httpx.HTTPError as exc:
             log.warning("subscribe HTTP/network error: %s", exc)
             return [], True
+
+    # -- file transfers (ADR-007 Phase C) -----------------------------------
+
+    def upload_transfer(
+        self,
+        *,
+        file_path: str,
+        sender_id: str,
+        recipient_id: str,
+        description: str = "",
+        expires_in: int | None = None,
+    ) -> dict[str, Any]:
+        """Upload a file to the bus façade for transfer to another agent.
+
+        POSTs to ``/transfers/upload`` as multipart/form-data.  Returns the
+        JSON response augmented with a ``locator`` dict.
+        """
+        ttl_hours = (expires_in or 86400) / 3600
+        filename = Path(file_path).name
+        try:
+            with open(file_path, "rb") as f:
+                resp = self._client.post(
+                    self._url("/transfers/upload"),
+                    files={"file": (filename, f, "application/octet-stream")},
+                    data={
+                        "sender": sender_id,
+                        "recipient": recipient_id,
+                        "ttl_hours": str(ttl_hours),
+                    },
+                )
+        except self._httpx.HTTPError as exc:
+            raise ValueError(str(exc)) from exc
+
+        if resp.status_code >= 400:
+            try:
+                detail = resp.json()
+            except Exception:
+                detail = resp.text
+            raise ValueError(f"upload_transfer HTTP {resp.status_code}: {detail}")
+
+        result: dict[str, Any] = resp.json()
+        result["locator"] = {
+            "scheme": "http",
+            "url": f"{self._base_url}/transfers/{result['transfer_id']}",
+        }
+        return result
+
+    def download_transfer(
+        self,
+        transfer_id: str,
+        dest_dir: str | None = None,
+    ) -> str:
+        """Download a transfer file to a local directory.
+
+        Returns the local file path as a string.  Verifies SHA-256 integrity
+        via the ``X-Transfer-SHA256`` response header.
+        """
+        if dest_dir is None:
+            dest_dir = tempfile.mkdtemp(prefix="a2a-xfer-")
+
+        try:
+            resp = self._client.get(
+                self._url(f"/transfers/{transfer_id}"),
+                follow_redirects=True,
+            )
+        except self._httpx.HTTPError as exc:
+            raise ValueError(str(exc)) from exc
+
+        if resp.status_code == 404:
+            raise FileNotFoundError(f"transfer {transfer_id} not found")
+        if resp.status_code == 403:
+            raise PermissionError(f"transfer {transfer_id} access denied")
+        resp.raise_for_status()
+
+        # Extract filename from Content-Disposition, fallback to transfer_id
+        cd = resp.headers.get("content-disposition", "")
+        filename = transfer_id
+        if "filename=" in cd:
+            for part in cd.split(";"):
+                part = part.strip()
+                if part.startswith("filename="):
+                    filename = part.split("=", 1)[1].strip('"').strip()
+                    break
+
+        dest_path = Path(dest_dir) / filename
+        tmp_path = dest_path.with_suffix(dest_path.suffix + ".tmp")
+
+        # Write atomically: write to .tmp then rename
+        tmp_path.write_bytes(resp.content)
+        tmp_path.rename(dest_path)
+
+        # Verify SHA-256 if the header is present
+        expected_sha = resp.headers.get("x-transfer-sha256")
+        if expected_sha:
+            sha256 = hashlib.sha256(dest_path.read_bytes()).hexdigest()
+            if sha256 != expected_sha:
+                dest_path.unlink(missing_ok=True)
+                raise ValueError(
+                    f"SHA-256 mismatch for transfer {transfer_id}: "
+                    f"expected {expected_sha}, got {sha256}"
+                )
+
+        return str(dest_path)
+
+    def delete_transfer(
+        self,
+        transfer_id: str,
+        *,
+        caller_id: str,
+    ) -> dict[str, Any]:
+        """Delete a staged transfer.
+
+        Caller must be sender or recipient.  Returns ``{"deleted": True,
+        "transfer_id": ...}`` on success.
+        """
+        try:
+            resp = self._client.delete(self._url(f"/transfers/{transfer_id}"))
+        except self._httpx.HTTPError as exc:
+            raise ValueError(str(exc)) from exc
+
+        if resp.status_code == 404:
+            raise FileNotFoundError(f"transfer {transfer_id} not found")
+        if resp.status_code == 403:
+            raise PermissionError(f"transfer {transfer_id} access denied")
+
+        return {"deleted": True, "transfer_id": transfer_id}
 
     # -- lifecycle ---------------------------------------------------------
 
