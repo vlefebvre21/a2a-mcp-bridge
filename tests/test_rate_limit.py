@@ -76,7 +76,6 @@ class TestRateLimiter:
         assert rl.allow("ip2") is True   # ip2 unaffected
         assert rl.allow("ip2") is False
 
-    @property
     def test_enabled_property(self) -> None:
         assert RateLimiter(rpm=0).enabled is False
         assert RateLimiter(rpm=1).enabled is True
