@@ -234,13 +234,15 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
         from .bus_store import HttpBusStore
         store: BusStore = HttpBusStore(bus_url, agent_id=agent_id, api_key=bus_api_key)
         signal_dir: SignalDir | None = None
-        waker: WebhookWaker | None = None
     else:
         sd = SignalDir(signal_dir_path or _resolve_signal_dir())
         store = Store(db_path, signal_dir=sd)
         store.init_schema()
         signal_dir = sd
-        waker = _load_waker_if_stale()
+        # Warm the module-level waker cache so the first tool call doesn't pay
+        # the registry-read cost. The return value is discarded — tool closures
+        # below call _load_waker_if_stale() directly to pick up hot reloads.
+        _load_waker_if_stale()
     store.upsert_agent(agent_id)
 
     mcp = A2AMcp("a2a-mcp-bridge")
