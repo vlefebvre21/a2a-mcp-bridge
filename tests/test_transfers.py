@@ -1,0 +1,215 @@
+"""Tests for transfers.py — ADR-007 Option A (same-machine file transfer)."""
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+
+def test_resolve_transfer_dir_defaults_to_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("A2A_TRANSFER_DIR", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    from a2a_mcp_bridge.transfers import resolve_transfer_dir
+
+    result = resolve_transfer_dir()
+    assert result == tmp_path / ".a2a-transfers"
+    assert result.is_dir()
+    assert oct(result.stat().st_mode)[-3:] == "700"
+
+
+def test_resolve_transfer_dir_honours_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    target = tmp_path / "custom"
+    monkeypatch.setenv("A2A_TRANSFER_DIR", str(target))
+
+    from a2a_mcp_bridge.transfers import resolve_transfer_dir
+
+    result = resolve_transfer_dir()
+    assert result == target
+    assert result.is_dir()
+
+
+def test_new_transfer_id_is_uuid4(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("A2A_TRANSFER_DIR", str(tmp_path))
+    import uuid as _uuid
+
+    from a2a_mcp_bridge.transfers import new_transfer_id
+
+    tid = new_transfer_id()
+    assert _uuid.UUID(tid).version == 4
+
+
+def test_transfer_path_includes_sha_prefix(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("A2A_TRANSFER_DIR", str(tmp_path))
+    from a2a_mcp_bridge.transfers import transfer_path
+
+    p = transfer_path("11111111-2222-3333-4444-555555555555", "abcdef0123456789" + "0" * 48, "report.md")
+    assert p.name == "abcdef0123456789_report.md"
+    assert p.parent.name == "11111111-2222-3333-4444-555555555555"
+    assert p.parent.parent == tmp_path
+
+
+def test_is_safe_path_rejects_traversal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("A2A_TRANSFER_DIR", str(tmp_path))
+    from a2a_mcp_bridge.transfers import is_safe_path
+
+    assert is_safe_path(tmp_path / "abc" / "file.md") is True
+    assert is_safe_path(Path("/etc/passwd")) is False
+    assert is_safe_path(tmp_path / ".." / "file.md") is False  # normalises up
+
+
+def test_stage_file_creates_staged_copy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("A2A_TRANSFER_DIR", str(tmp_path))
+    src = tmp_path / "source.md"
+    src.write_text("hello world\n")
+
+    from a2a_mcp_bridge.transfers import stage_file
+
+    rec = stage_file(src, sender_id="alice", recipient_id="bob", filename="source.md")
+    assert rec.size == len(b"hello world\n")
+    assert rec.filename == "source.md"
+    assert Path(rec.locator_path).is_file()
+    assert Path(rec.locator_path).read_bytes() == b"hello world\n"
+    # File mode 0o600
+    assert oct(Path(rec.locator_path).stat().st_mode)[-3:] == "600"
+
+
+def test_stage_file_rejects_too_large(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("A2A_TRANSFER_DIR", str(tmp_path))
+    monkeypatch.setenv("A2A_TRANSFER_MAX_SIZE_BYTES", "10")
+
+    src = tmp_path / "big.bin"
+    src.write_bytes(b"x" * 100)
+
+    from a2a_mcp_bridge.transfers import stage_file
+
+    with pytest.raises(ValueError, match="TRANSFER_TOO_LARGE"):
+        stage_file(src, sender_id="alice", recipient_id="bob", filename="big.bin")
+
+
+def test_stage_file_rejects_source_outside_fs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("A2A_TRANSFER_DIR", str(tmp_path))
+    from a2a_mcp_bridge.transfers import stage_file
+
+    with pytest.raises(FileNotFoundError):
+        stage_file(tmp_path / "ghost.md", sender_id="alice", recipient_id="bob", filename="ghost.md")
+
+
+def test_stage_file_writes_manifest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import json
+
+    monkeypatch.setenv("A2A_TRANSFER_DIR", str(tmp_path))
+    src = tmp_path / "source.md"
+    src.write_text("hi")
+
+    from a2a_mcp_bridge.transfers import stage_file
+
+    rec = stage_file(src, sender_id="alice", filename="source.md", recipient_id="bob", description="test")
+    meta_path = Path(rec.locator_path).parent / "meta.json"
+    assert meta_path.is_file()
+    meta = json.loads(meta_path.read_text())
+    assert meta["sender_id"] == "alice"
+    assert meta["recipient_id"] == "bob"
+    assert meta["description"] == "test"
+    assert meta["sha256"] == rec.sha256
+
+
+def test_stage_file_quota_enforced(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("A2A_TRANSFER_DIR", str(tmp_path))
+    monkeypatch.setenv("A2A_TRANSFER_MAX_PENDING_PER_AGENT", "2")
+
+    from a2a_mcp_bridge.transfers import stage_file
+
+    src = tmp_path / "src.md"
+    src.write_text("x")
+    stage_file(src, sender_id="alice", filename="a.md", recipient_id="bob")
+    stage_file(src, sender_id="alice", filename="b.md", recipient_id="bob")
+    with pytest.raises(ValueError, match="TRANSFER_QUOTA_EXCEEDED"):
+        stage_file(src, sender_id="alice", filename="c.md", recipient_id="bob")
+
+
+def test_load_manifest_roundtrip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("A2A_TRANSFER_DIR", str(tmp_path))
+    src = tmp_path / "s.md"
+    src.write_text("data")
+
+    from a2a_mcp_bridge.transfers import load_manifest, stage_file
+
+    rec = stage_file(src, sender_id="alice", filename="s.md", recipient_id="bob")
+    m = load_manifest(rec.transfer_id)
+    assert m["sender_id"] == "alice"
+    assert m["recipient_id"] == "bob"
+    assert m["sha256"] == rec.sha256
+
+
+def test_resolve_locator_path_enforces_acl(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("A2A_TRANSFER_DIR", str(tmp_path))
+    src = tmp_path / "s.md"
+    src.write_text("secret")
+
+    from a2a_mcp_bridge.transfers import resolve_locator_path, stage_file
+
+    rec = stage_file(src, sender_id="alice", filename="s.md", recipient_id="bob")
+    # Recipient can fetch
+    assert resolve_locator_path(rec.transfer_id, caller_id="bob") == Path(rec.locator_path)
+    # Sender can fetch (useful for resend/verify)
+    assert resolve_locator_path(rec.transfer_id, caller_id="alice") == Path(rec.locator_path)
+    # Random third party cannot
+    with pytest.raises(PermissionError):
+        resolve_locator_path(rec.transfer_id, caller_id="eve")
+
+
+def test_resolve_locator_path_unknown_id(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("A2A_TRANSFER_DIR", str(tmp_path))
+    from a2a_mcp_bridge.transfers import resolve_locator_path
+
+    with pytest.raises(FileNotFoundError):
+        resolve_locator_path("nonexistent", caller_id="alice")
+
+
+def test_delete_transfer_scoped_to_parties(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("A2A_TRANSFER_DIR", str(tmp_path))
+    src = tmp_path / "s.md"
+    src.write_text("bye")
+
+    from a2a_mcp_bridge.transfers import delete_transfer, stage_file
+
+    rec = stage_file(src, sender_id="alice", filename="s.md", recipient_id="bob")
+
+    # Eve can't delete
+    with pytest.raises(PermissionError):
+        delete_transfer(rec.transfer_id, caller_id="eve")
+    assert Path(rec.locator_path).is_file()
+
+    # Bob can (recipient)
+    delete_transfer(rec.transfer_id, caller_id="bob")
+    assert not Path(rec.locator_path).exists()
+    assert not (tmp_path / rec.transfer_id).exists()
+
+
+def test_sweep_removes_expired(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("A2A_TRANSFER_DIR", str(tmp_path))
+    src = tmp_path / "s.md"
+    src.write_text("data")
+
+    from a2a_mcp_bridge.transfers import _transfer_sweep, stage_file
+
+    # TTL in the past
+    rec = stage_file(src, sender_id="alice", filename="s.md", recipient_id="bob", expires_in=-1)
+    assert Path(rec.locator_path).is_file()
+
+    removed = _transfer_sweep()
+    assert removed == 1
+    assert not Path(rec.locator_path).exists()
+
+
+def test_sweep_keeps_fresh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("A2A_TRANSFER_DIR", str(tmp_path))
+    src = tmp_path / "s.md"
+    src.write_text("data")
+
+    from a2a_mcp_bridge.transfers import _transfer_sweep, stage_file
+
+    rec = stage_file(src, sender_id="alice", filename="s.md", recipient_id="bob", expires_in=3600)
+    assert _transfer_sweep() == 0
+    assert Path(rec.locator_path).is_file()

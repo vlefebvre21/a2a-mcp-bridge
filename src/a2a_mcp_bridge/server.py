@@ -20,10 +20,13 @@ from .bus_store import BusStore
 from .signals import SignalDir
 from .store import Store
 from .tools import (
+    tool_agent_delete_file,
+    tool_agent_fetch_file,
     tool_agent_inbox,
     tool_agent_inbox_peek,
     tool_agent_list,
     tool_agent_send,
+    tool_agent_send_file,
     tool_agent_subscribe,
 )
 from .wake import WebhookWaker, load_registry
@@ -468,6 +471,55 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
             "version": _bridge_version(),
             "agent_id": agent_id,
         }
+
+    @mcp.tool()
+    def agent_send_file(
+        target: str,
+        file_path: str,
+        description: str = "",
+        expires_in: int | None = None,
+        intent: str | None = None,
+    ) -> dict[str, Any]:
+        """Send a local file to *target* without loading it into LLM context.
+
+        See ADR-007 for the full protocol. The file is staged under
+        ``A2A_TRANSFER_DIR`` and a JSON reference is sent over the A2A
+        message bus. Recipient fetches via :func:`agent_fetch_file`.
+
+        Args:
+            target: recipient agent_id.
+            file_path: absolute path to a local file.
+            description: optional human-readable note.
+            expires_in: seconds until TTL expiry (default 86400, hard
+                cap A2A_TRANSFER_MAX_TTL_SECONDS).
+            intent: ADR-002 wake intent (triage / execute / review /
+                question / fyi).
+
+        Returns:
+            ``{"transfer_id", "sha256", "size", "filename", "expires_at",
+            "message_id"}`` on success, ``{"error": {"code", "message"}}``
+            otherwise.
+        """
+        return tool_agent_send_file(
+            store, agent_id, target, file_path,
+            description=description, expires_in=expires_in,
+            signal_dir=signal_dir, waker=_load_waker_if_stale(), intent=intent,
+        )
+
+    @mcp.tool()
+    def agent_fetch_file(transfer_id: str, verify: bool = True) -> dict[str, Any]:
+        """Resolve *transfer_id* to a local path for this agent.
+
+        Caller must be the declared recipient (or sender). When
+        ``verify=True`` (default), sha256 is re-checked — ~50 ms per
+        100 MB, negligible vs. silent-corruption risk.
+        """
+        return tool_agent_fetch_file(store, agent_id, transfer_id, verify=verify)
+
+    @mcp.tool()
+    def agent_delete_file(transfer_id: str) -> dict[str, Any]:
+        """Delete a staged transfer. Caller must be sender or recipient."""
+        return tool_agent_delete_file(store, agent_id, transfer_id)
 
     return mcp
 
