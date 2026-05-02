@@ -336,12 +336,19 @@ def _facade_upload(
     Returns:
         Dict with keys ``transfer_id``, ``sha256``, ``size``,
         ``filename``, ``expires_at``, ``locator``.
+
+    Raises:
+        FileNotFoundError: Upload endpoint unreachable (404).
+        ValueError: ``TRANSFER_TOO_LARGE``, ``TRANSFER_QUOTA_EXCEEDED``,
+            or generic HTTP/network error with status code.
     """
     import json as _json
+    import urllib.error
     import urllib.request
+    import uuid
 
     url = f"{bus_url.rstrip('/')}/transfers/upload"
-    boundary = b"----A2ABoundary2026"
+    boundary = uuid.uuid4().hex.encode()
 
     filename = filepath.name
     # Build multipart/form-data body manually (stdlib only).
@@ -390,6 +397,10 @@ def _facade_upload(
             raise FileNotFoundError(f"upload endpoint not found: {url}") from exc
         if exc.code == 413:
             raise ValueError(f"TRANSFER_TOO_LARGE: {detail}") from exc
+        if exc.code == 429:
+            raise ValueError(f"TRANSFER_QUOTA_EXCEEDED: {detail}") from exc
+        if exc.code == 400:
+            raise ValueError(f"TRANSFER_BAD_REQUEST: {detail}") from exc
         raise ValueError(f"upload_transfer HTTP {exc.code}: {detail}") from exc
     except urllib.error.URLError as exc:
         raise ValueError(f"upload_transfer network error: {exc.reason}") from exc
@@ -402,19 +413,66 @@ def _facade_upload(
     return result
 
 
-def _facade_download(url: str, api_key: str, dest: Path) -> str:
+class _FacadeDownloadResult:
+    """Immutable result from :func:`_facade_download`."""
+
+    __slots__ = ("filename", "path", "sha256", "verified")
+
+    def __init__(
+        self, path: Path, sha256: str, filename: str, verified: bool
+    ) -> None:
+        self.path = path
+        self.sha256 = sha256
+        self.filename = filename
+        self.verified = verified
+
+
+def _parse_content_disposition(header: str) -> str:
+    """Extract filename from a Content-Disposition header value.
+
+    Returns the filename if found, empty string otherwise.
+    """
+    for part in header.split(";"):
+        part = part.strip()
+        if part.startswith("filename="):
+            return part.split("=", 1)[1].strip('"').strip()
+    return ""
+
+
+def _facade_download(
+    url: str,
+    api_key: str,
+    dest_dir: str,
+    verify: bool = True,
+) -> _FacadeDownloadResult:
     """Download a transfer file from the bus façade.
 
     Uses ``urllib.request`` (stdlib) to avoid a hard httpx dependency.
+    Streams the response to disk (no full-RAM buffer).
+
+    Integrity check: when ``verify=True`` and the response includes an
+    ``X-Transfer-SHA256`` header, the downloaded file's sha256 is
+    compared against it.  A mismatch raises ``ValueError``.
 
     Args:
         url: Full URL to the transfer resource.
         api_key: Bearer token for the ``Authorization`` header.
-        dest: Local path to write the file to.
+        dest_dir: Directory to write the file into (created if needed).
+        verify: If True, verify sha256 against ``X-Transfer-SHA256``
+            header when present.
 
     Returns:
-        The sha256 hex digest of the downloaded file.
+        A :class:`_FacadeDownloadResult` with ``path``, ``sha256``,
+        ``filename``, and ``verified`` fields.
+
+    Raises:
+        FileNotFoundError: Transfer not found (HTTP 404).
+        PermissionError: Access denied (HTTP 403).
+        ValueError: Hash mismatch, bad request (400), rate-limited (429),
+            or other HTTP/network error.
     """
+    import shutil
+    import urllib.error
     import urllib.request
 
     req = urllib.request.Request(
@@ -423,26 +481,75 @@ def _facade_download(url: str, api_key: str, dest: Path) -> str:
     )
 
     try:
-        with urllib.request.urlopen(req) as resp:
-            data = resp.read()
+        resp = urllib.request.urlopen(req)
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             raise FileNotFoundError(f"transfer not found: {url}") from exc
         if exc.code == 403:
             raise PermissionError(f"transfer access denied: {url}") from exc
+        if exc.code == 400:
+            detail = exc.read().decode(errors="replace")
+            raise ValueError(f"TRANSFER_BAD_REQUEST: {detail}") from exc
+        if exc.code == 429:
+            detail = exc.read().decode(errors="replace")
+            raise ValueError(f"TRANSFER_QUOTA_EXCEEDED: {detail}") from exc
         raise ValueError(f"download HTTP {exc.code}") from exc
     except urllib.error.URLError as exc:
         raise ValueError(f"download network error: {exc.reason}") from exc
 
-    # Write atomically
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dest.with_suffix(dest.suffix + ".tmp")
-    tmp.write_bytes(data)
-    tmp.rename(dest)
+    # Determine filename from Content-Disposition, fallback to URL slug.
+    cd = resp.headers.get("Content-Disposition", "")
+    filename = _parse_content_disposition(cd)
+    if not filename:
+        filename = url.rsplit("/", 1)[-1] if "/" in url else "download"
 
-    # Compute sha256
-    h = hashlib.sha256(data)
-    return h.hexdigest()
+    # Expected sha256 from header (may be absent on older façades).
+    expected_sha = resp.headers.get("X-Transfer-SHA256", "")
+
+    dest_path = Path(dest_dir) / filename
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = dest_path.with_suffix(dest_path.suffix + ".tmp")
+
+    # Stream download — avoid buffering the entire file in RAM.
+    h = hashlib.sha256()
+    try:
+        with open(tmp_path, "wb") as fout:
+            while True:
+                chunk = resp.read(64 * 1024)
+                if not chunk:
+                    break
+                h.update(chunk)
+                fout.write(chunk)
+            fout.flush()
+            os.fsync(fout.fileno())
+        tmp_path.rename(dest_path)
+    except BaseException:
+        # Clean up temp file on any error (tempdir leak prevention).
+        tmp_path.unlink(missing_ok=True)
+        dest_path.unlink(missing_ok=True)
+        # Clean up dest_dir if we created it (best-effort, ignore errors)
+        shutil.rmtree(Path(dest_dir), ignore_errors=True)
+        raise
+    finally:
+        resp.close()
+
+    sha256_hex = h.hexdigest()
+    verified = False
+
+    if verify and expected_sha:
+        if sha256_hex != expected_sha:
+            dest_path.unlink(missing_ok=True)
+            raise ValueError(
+                f"SHA-256 mismatch for transfer: expected {expected_sha}, got {sha256_hex}"
+            )
+        verified = True
+
+    return _FacadeDownloadResult(
+        path=dest_path,
+        sha256=sha256_hex,
+        filename=filename,
+        verified=verified,
+    )
 
 
 def tool_agent_send_file(
@@ -681,13 +788,13 @@ def tool_agent_fetch_file(
         api_key = os.environ.get("A2A_FACADE_API_KEY", "")
         download_url = f"{bus_url.rstrip('/')}/transfers/{transfer_id}"
         tmp_dir = _tf.mkdtemp(prefix="a2a_fetch_")
-        dest = Path(tmp_dir) / transfer_id
 
         try:
-            sha256_hex = _facade_download(
+            dl = _facade_download(
                 url=download_url,
                 api_key=api_key,
-                dest=dest,
+                dest_dir=tmp_dir,
+                verify=verify,
             )
         except FileNotFoundError:
             return {"error": {"code": "TRANSFER_NOT_FOUND", "message": transfer_id}}
@@ -696,13 +803,13 @@ def tool_agent_fetch_file(
         except ValueError as e:
             return {"error": {"code": "TRANSFER_HASH_MISMATCH", "message": str(e)}}
 
-        file_stat = dest.stat()
+        file_stat = dl.path.stat()
         return {
             "transfer_id": transfer_id,
-            "path": str(dest),
+            "path": str(dl.path),
             "size": file_stat.st_size,
-            "sha256": sha256_hex,
-            "filename": dest.name,
+            "sha256": dl.sha256,
+            "filename": dl.filename,
             "description": "",
             "expires_at": "",
         }
