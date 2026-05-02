@@ -707,13 +707,25 @@ development or when behind a reverse proxy that already handles it).
 ### File transfers (ADR-007)
 
 Starting v0.7.0, agents can hand off arbitrary-size files without
-loading their contents into either LLM's context window.
+loading their contents into either LLM's context window. Cross-machine
+transfer (Option C, ADR-007 §4) is fully shipped and validated
+end-to-end as of v0.7.5 (VPS → NAT'd Mac with sha256 integrity).
+
+#### Sending a file
 
 ```python
 # sender
 agent_send_file(target="bob", file_path="/tmp/report.md", description="weekly")
 # → {"transfer_id": "...", "sha256": "...", "size": 28845, ...}
+```
 
+The sender stages the file under `A2A_TRANSFER_DIR` (default
+`~/.a2a-transfers/`) and sends a small JSON reference (`kind=file_transfer`)
+over the message bus. The file payload never touches either LLM context.
+
+#### Fetching a file
+
+```python
 # recipient (after the wake-up fires)
 inbox = agent_inbox()                           # gets the reference
 ref = json.loads(inbox[0]["body"])              # kind=file_transfer
@@ -724,9 +736,49 @@ got = agent_fetch_file(ref["transfer_id"])
 agent_delete_file(ref["transfer_id"])
 ```
 
-Option A ships **same-machine only** — both sender and recipient
-must share the filesystem under `A2A_TRANSFER_DIR`. Cross-machine
-transfer via the HTTP façade lands in v0.7.1 (Option C).
+#### Transport dispatch
+
+| Topology | How it works |
+|---|---|
+| Same-machine (both agents on one host) | Direct filesystem access via shared `A2A_TRANSFER_DIR`. No network hop. |
+| Cross-machine (NAT, separate hosts) | When `A2A_BUS_URL` is set, `agent_fetch_file` dispatches via `_facade_download`, which does a `GET /transfers/<id>` against the HTTP façade. |
+
+Two client paths exist for the cross-machine download:
+
+1. **`HttpBusStore.download_transfer`** (`bus_store.py` ~l.420) — uses
+   `httpx` with `X-Agent-Id` and `Authorization` headers set at client
+   init.
+2. **`_facade_download`** (`tools.py` ~l.442) — uses stdlib
+   `urllib.request` to avoid a hard `httpx` dependency. Takes an
+   `agent_id` parameter and emits the `X-Agent-Id` header when non-empty
+   (v0.7.5).
+
+The façade enforces recipient ACL on `GET /transfers/<id>` via the
+`X-Agent-Id` header — a 403 is returned if the requesting agent is not
+the declared recipient (fixed in v0.7.5, PR #45).
+
+#### Environment variables
+
+| Variable | Purpose |
+|---|---|
+| `A2A_BUS_URL` | When set, forces façade path for transfers (enables cross-machine). |
+| `A2A_FACADE_API_KEY` | Bearer token for façade auth. |
+| `A2A_TRANSFER_DIR` | Staging directory (default `~/.a2a-transfers/`, mode `0700`). |
+| `A2A_TRANSFER_MAX_TTL_SECONDS` | Hard cap on per-transfer TTL (default 604800 = 7 days). |
+
+#### Facade deployment
+
+The façade runs as a systemd user unit:
+
+```
+~/.config/systemd/user/a2a-facade.service
+  → /home/vince/.local/bin/a2a-mcp-bridge serve-facade --host 0.0.0.0 --port 8080 --api-key <token>
+```
+
+For cross-machine transfers, the sender's locator URL
+(`http://127.0.0.1:...`) is rewritten to the `A2A_BUS_URL` host by
+`_rewrite_transfer_url()` (v0.7.4, PR #43) so that NAT'd recipients
+can reach the façade on its public address.
 
 ### `HttpBusStore` client
 
