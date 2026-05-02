@@ -786,7 +786,9 @@ def tool_agent_fetch_file(
     if bus_url:
         # --- v0.7.2: façade download when A2A_BUS_URL is set ---
         api_key = os.environ.get("A2A_FACADE_API_KEY", "")
-        download_url = f"{bus_url.rstrip('/')}/transfers/{transfer_id}"
+        download_url = _rewrite_transfer_url(
+            f"{bus_url.rstrip('/')}/transfers/{transfer_id}"
+        )
         tmp_dir = _tf.mkdtemp(prefix="a2a_fetch_")
 
         try:
@@ -908,6 +910,35 @@ def tool_agent_delete_file(
     except PermissionError as e:
         return {"error": {"code": "TRANSFER_ACL_DENIED", "message": str(e)}}
     return {"deleted": True, "transfer_id": transfer_id}
+
+
+def _rewrite_transfer_url(locator_url: str) -> str:
+    """Rewrite an http(s) locator URL to use the local ``A2A_BUS_URL`` host.
+
+    When the sender (VPS) embeds ``http://127.0.0.1:8080/transfers/abc``
+    in the locator, a remote (NAT'd) recipient cannot reach it.  If
+    ``A2A_BUS_URL`` is set, the scheme+netloc are replaced so the
+    recipient downloads from the correct host.
+
+    Non-http URLs (e.g. ``file:///...``) and cases where
+    ``A2A_BUS_URL`` is unset are returned unchanged.
+    """
+    from urllib.parse import urlparse, urlunparse
+
+    bus_url = os.environ.get("A2A_BUS_URL", "").strip()
+    if not bus_url:
+        return locator_url
+
+    parsed_locator = urlparse(locator_url)
+    if parsed_locator.scheme not in ("http", "https"):
+        return locator_url
+
+    parsed_bus = urlparse(bus_url)
+    rewritten = parsed_locator._replace(
+        scheme=parsed_bus.scheme or parsed_locator.scheme,
+        netloc=parsed_bus.netloc or parsed_locator.netloc,
+    )
+    return urlunparse(rewritten)
 
 
 def _iso_utc(epoch_or_iso: float | str) -> str:
