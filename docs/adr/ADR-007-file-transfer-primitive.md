@@ -400,7 +400,7 @@ bypass LLM context). See §3.2.
 
 ### 8.2 Bug #44 — 403 Forbidden on every cross-host fetch, missing `X-Agent-Id` in `_facade_download` (v0.7.5)
 
-**Problem.** The HTTP façade enforces recipient ACL on `GET /transfers/<id>`: the request must carry both `Authorization: Bearer <key>` (valid token) **and** `X-Agent-Id: <agent_id>` (must match `transfers.recipient_id`). However, `_facade_download` in `tools.py` was added before this ACL enforcement and did not emit the `X-Agent-Id` header, causing every cross-host fetch to return 403 Forbidden.
+**Problem.** The HTTP façade enforces recipient ACL on `GET /transfers/<id>`: the request must carry both `Authorization: Bearer <token>` **and** `X-Agent-Id: <agent_id>` (must match `transfers.recipient_id`). However, `_facade_download` in `tools.py` was added before this ACL enforcement and did not emit the `X-Agent-Id` header, causing every cross-host fetch to return 403 Forbidden.
 
 **Fix (v0.7.5, PR #45).** `_facade_download` now accepts an optional `agent_id` parameter. When non-empty, it injects `X-Agent-Id: <agent_id>` into the `urllib.request.Request` headers alongside the existing `Authorization` bearer token.
 
