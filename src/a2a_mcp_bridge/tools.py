@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import os
 import time
+from pathlib import Path
 from typing import Any
 
 from .bus_store import BusStore, HttpBusStore
@@ -307,6 +310,248 @@ def _serialize_message(m: Message) -> dict[str, Any]:
     }
 
 
+def _facade_upload(
+    bus_url: str,
+    api_key: str,
+    filepath: Path,
+    sender: str,
+    recipient: str,
+    ttl_hours: int,
+) -> dict[str, Any]:
+    """Upload a file to the bus façade via POST /transfers/upload.
+
+    Uses ``urllib.request`` (stdlib) to avoid a hard dependency on httpx
+    for the *sender* side — only the HttpBusStore constructor requires
+    httpx.  This keeps ``pip install a2a-mcp-bridge`` (without ``[remote]``)
+    working for SqliteBusStore agents that only need to *upload*.
+
+    Args:
+        bus_url: Base URL of the façade (e.g. ``http://localhost:8080``).
+        api_key: Bearer token for the ``Authorization`` header.
+        filepath: Local file to upload.
+        sender: Sender agent_id.
+        recipient: Recipient agent_id.
+        ttl_hours: Time-to-live in hours.
+
+    Returns:
+        Dict with keys ``transfer_id``, ``sha256``, ``size``,
+        ``filename``, ``expires_at``, ``locator``.
+
+    Raises:
+        FileNotFoundError: Upload endpoint unreachable (404).
+        ValueError: ``TRANSFER_TOO_LARGE``, ``TRANSFER_QUOTA_EXCEEDED``,
+            or generic HTTP/network error with status code.
+    """
+    import json as _json
+    import urllib.error
+    import urllib.request
+    import uuid
+
+    url = f"{bus_url.rstrip('/')}/transfers/upload"
+    boundary = uuid.uuid4().hex.encode()
+
+    filename = filepath.name
+    # Build multipart/form-data body manually (stdlib only).
+    parts: list[bytes] = []
+
+    def _add_field(name: str, value: str) -> None:
+        parts.append(b"--" + boundary + b"\r\n")
+        parts.append(
+            f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode()
+        )
+        parts.append(value.encode() + b"\r\n")
+
+    _add_field("sender", sender)
+    _add_field("recipient", recipient)
+    _add_field("ttl_hours", str(ttl_hours))
+
+    # File part
+    parts.append(b"--" + boundary + b"\r\n")
+    parts.append(
+        f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'.encode()
+    )
+    parts.append(b"Content-Type: application/octet-stream\r\n\r\n")
+
+    file_bytes = filepath.read_bytes()
+    parts.append(file_bytes)
+    parts.append(b"\r\n")
+    parts.append(b"--" + boundary + b"--\r\n")
+
+    body = b"".join(parts)
+    req = urllib.request.Request(
+        url,
+        data=body,
+        method="POST",
+        headers={
+            "Content-Type": f"multipart/form-data; boundary={boundary.decode()}",
+            "Authorization": f"Bearer {api_key}",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(req) as resp:
+            result: dict[str, Any] = _json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode(errors="replace")
+        if exc.code == 404:
+            raise FileNotFoundError(f"upload endpoint not found: {url}") from exc
+        if exc.code == 413:
+            raise ValueError(f"TRANSFER_TOO_LARGE: {detail}") from exc
+        if exc.code == 429:
+            raise ValueError(f"TRANSFER_QUOTA_EXCEEDED: {detail}") from exc
+        if exc.code == 400:
+            raise ValueError(f"TRANSFER_BAD_REQUEST: {detail}") from exc
+        raise ValueError(f"upload_transfer HTTP {exc.code}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise ValueError(f"upload_transfer network error: {exc.reason}") from exc
+
+    # Augment with locator
+    result["locator"] = {
+        "scheme": "http",
+        "url": f"{bus_url.rstrip('/')}/transfers/{result['transfer_id']}",
+    }
+    return result
+
+
+class _FacadeDownloadResult:
+    """Immutable result from :func:`_facade_download`."""
+
+    __slots__ = ("filename", "path", "sha256", "verified")
+
+    def __init__(
+        self, path: Path, sha256: str, filename: str, verified: bool
+    ) -> None:
+        self.path = path
+        self.sha256 = sha256
+        self.filename = filename
+        self.verified = verified
+
+
+def _parse_content_disposition(header: str) -> str:
+    """Extract filename from a Content-Disposition header value.
+
+    Returns the filename if found, empty string otherwise.
+    """
+    for part in header.split(";"):
+        part = part.strip()
+        if part.startswith("filename="):
+            return part.split("=", 1)[1].strip('"').strip()
+    return ""
+
+
+def _facade_download(
+    url: str,
+    api_key: str,
+    dest_dir: str,
+    verify: bool = True,
+) -> _FacadeDownloadResult:
+    """Download a transfer file from the bus façade.
+
+    Uses ``urllib.request`` (stdlib) to avoid a hard httpx dependency.
+    Streams the response to disk (no full-RAM buffer).
+
+    Integrity check: when ``verify=True`` and the response includes an
+    ``X-Transfer-SHA256`` header, the downloaded file's sha256 is
+    compared against it.  A mismatch raises ``ValueError``.
+
+    Args:
+        url: Full URL to the transfer resource.
+        api_key: Bearer token for the ``Authorization`` header.
+        dest_dir: Directory to write the file into (created if needed).
+        verify: If True, verify sha256 against ``X-Transfer-SHA256``
+            header when present.
+
+    Returns:
+        A :class:`_FacadeDownloadResult` with ``path``, ``sha256``,
+        ``filename``, and ``verified`` fields.
+
+    Raises:
+        FileNotFoundError: Transfer not found (HTTP 404).
+        PermissionError: Access denied (HTTP 403).
+        ValueError: Hash mismatch, bad request (400), rate-limited (429),
+            or other HTTP/network error.
+    """
+    import shutil
+    import urllib.error
+    import urllib.request
+
+    req = urllib.request.Request(
+        url,
+        headers={"Authorization": f"Bearer {api_key}"},
+    )
+
+    try:
+        resp = urllib.request.urlopen(req)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            raise FileNotFoundError(f"transfer not found: {url}") from exc
+        if exc.code == 403:
+            raise PermissionError(f"transfer access denied: {url}") from exc
+        if exc.code == 400:
+            detail = exc.read().decode(errors="replace")
+            raise ValueError(f"TRANSFER_BAD_REQUEST: {detail}") from exc
+        if exc.code == 429:
+            detail = exc.read().decode(errors="replace")
+            raise ValueError(f"TRANSFER_QUOTA_EXCEEDED: {detail}") from exc
+        raise ValueError(f"download HTTP {exc.code}") from exc
+    except urllib.error.URLError as exc:
+        raise ValueError(f"download network error: {exc.reason}") from exc
+
+    # Determine filename from Content-Disposition, fallback to URL slug.
+    cd = resp.headers.get("Content-Disposition", "")
+    filename = _parse_content_disposition(cd)
+    if not filename:
+        filename = url.rsplit("/", 1)[-1] if "/" in url else "download"
+
+    # Expected sha256 from header (may be absent on older façades).
+    expected_sha = resp.headers.get("X-Transfer-SHA256", "")
+
+    dest_path = Path(dest_dir) / filename
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = dest_path.with_suffix(dest_path.suffix + ".tmp")
+
+    # Stream download — avoid buffering the entire file in RAM.
+    h = hashlib.sha256()
+    try:
+        with open(tmp_path, "wb") as fout:
+            while True:
+                chunk = resp.read(64 * 1024)
+                if not chunk:
+                    break
+                h.update(chunk)
+                fout.write(chunk)
+            fout.flush()
+            os.fsync(fout.fileno())
+        tmp_path.rename(dest_path)
+    except BaseException:
+        # Clean up temp file on any error (tempdir leak prevention).
+        tmp_path.unlink(missing_ok=True)
+        dest_path.unlink(missing_ok=True)
+        # Clean up dest_dir if we created it (best-effort, ignore errors)
+        shutil.rmtree(Path(dest_dir), ignore_errors=True)
+        raise
+    finally:
+        resp.close()
+
+    sha256_hex = h.hexdigest()
+    verified = False
+
+    if verify and expected_sha:
+        if sha256_hex != expected_sha:
+            dest_path.unlink(missing_ok=True)
+            raise ValueError(
+                f"SHA-256 mismatch for transfer: expected {expected_sha}, got {sha256_hex}"
+            )
+        verified = True
+
+    return _FacadeDownloadResult(
+        path=dest_path,
+        sha256=sha256_hex,
+        filename=filename,
+        verified=verified,
+    )
+
+
 def tool_agent_send_file(
     store: BusStore,
     caller_id: str,
@@ -323,17 +568,84 @@ def tool_agent_send_file(
     Wire protocol: ADR-007 §4.1. The file content never enters either
     LLM's context window — only the reference message does.
 
+    Dispatch priority (v0.7.2+):
+
+    1. If ``A2A_BUS_URL`` is set in the environment → upload via the
+       façade HTTP endpoint (``_facade_upload``), regardless of whether
+       *store* is ``Store`` or ``HttpBusStore``.  This fixes the bug
+       where VPS agents using ``Store`` (direct SQLite) would stage
+       files locally — unreachable by remote (NAT'd) recipients.
+    2. If *store* is ``HttpBusStore`` (no ``A2A_BUS_URL`` but the
+       caller explicitly built an ``HttpBusStore``) → use its
+       ``upload_transfer`` method (pre-v0.7.2 Phase C path).
+    3. Otherwise → Phase A local ``stage_file`` (same-machine only).
+
     Errors returned as ``{"error": {"code": ..., "message": ...}}``:
         TRANSFER_SOURCE_NOT_FOUND, TRANSFER_TOO_LARGE,
         TRANSFER_QUOTA_EXCEEDED, <delegated from agent_send>.
     """
-    from pathlib import Path as _Path
+    import json as _json
 
-    src = _Path(file_path)
+    src = Path(file_path)
     filename = src.name
 
+    bus_url = os.environ.get("A2A_BUS_URL", "").strip()
+
+    if bus_url:
+        # --- v0.7.2: façade upload when A2A_BUS_URL is set ---
+        api_key = os.environ.get("A2A_FACADE_API_KEY", "")
+        ttl_hours = (expires_in or 86400) / 3600
+        try:
+            upload = _facade_upload(
+                bus_url=bus_url,
+                api_key=api_key,
+                filepath=src,
+                sender=caller_id,
+                recipient=target,
+                ttl_hours=int(ttl_hours),
+            )
+        except FileNotFoundError:
+            return {"error": {"code": "TRANSFER_SOURCE_NOT_FOUND", "message": str(src)}}
+        except ValueError as e:
+            code, _, msg = str(e).partition(":")
+            return {"error": {"code": code.strip(), "message": msg.strip()}}
+
+        body_obj = {
+            "kind": "file_transfer",
+            "version": 1,
+            "transfer_id": upload["transfer_id"],
+            "filename": upload["filename"],
+            "size": upload["size"],
+            "sha256": upload["sha256"],
+            "description": description,
+            "expires_at": _iso_utc(upload["expires_at"]),
+            "locator": {"scheme": "http", "url": upload["locator"]["url"]},
+        }
+
+        send_result = tool_agent_send(
+            store, caller_id, target, _json.dumps(body_obj),
+            metadata=None,
+            signal_dir=signal_dir,
+            waker=waker,
+            intent=intent,
+        )
+        if "error" in send_result:
+            return {
+                "error": send_result["error"],
+                "transfer_id": upload["transfer_id"],
+                "hint": "file uploaded but notification failed; caller may retry agent_send",
+            }
+        return {
+            "transfer_id": upload["transfer_id"],
+            "sha256": upload["sha256"],
+            "size": upload["size"],
+            "filename": upload["filename"],
+            "expires_at": body_obj["expires_at"],
+            "message_id": send_result.get("message_id"),
+        }
+
     if isinstance(store, HttpBusStore):
-        # --- Phase C: remote upload via HttpBusStore ---
+        # --- Phase C: remote upload via HttpBusStore (pre-v0.7.2 path) ---
         try:
             upload = store.upload_transfer(
                 file_path=file_path,
@@ -359,7 +671,6 @@ def tool_agent_send_file(
             "expires_at": _iso_utc(upload["expires_at"]),
             "locator": {"scheme": "http", "url": upload["locator"]["url"]},
         }
-        import json as _json
 
         send_result = tool_agent_send(
             store, caller_id, target, _json.dumps(body_obj),
@@ -412,7 +723,6 @@ def tool_agent_send_file(
         "expires_at": _iso_utc(manifest["expires_at"]),
         "locator": {"scheme": "file", "path": rec.locator_path},
     }
-    import json as _json
 
     send_result = tool_agent_send(
         store, caller_id, target, _json.dumps(body_obj),
@@ -450,12 +760,17 @@ def tool_agent_fetch_file(
     the bytes (e.g. ``read_file``) is invoked separately. Validates
     sha256 by default (cost ~50 ms per 100 MB).
 
-    Phase C (remote / HttpBusStore): the manifest lives on the façade
-    server — there is **no** local ``meta.json`` on the receiving host.
-    We short-circuit directly to ``download_transfer()`` which queries
-    the façade's SQLite-backed TransferStore.  Integrity is verified
-    via the ``X-Transfer-SHA256`` header already checked inside
-    ``HttpBusStore.download_transfer()``.
+    Dispatch priority (v0.7.2+):
+
+    1. If ``A2A_BUS_URL`` is set in the environment → download via the
+       façade HTTP endpoint (``_facade_download``), regardless of
+       whether *store* is ``Store`` or ``HttpBusStore``.
+    2. If *store* is ``HttpBusStore`` → use its ``download_transfer``
+       method (pre-v0.7.2 Phase C path).
+    3. Otherwise → Phase A local ``load_manifest`` + ``resolve_locator_path``.
+
+    Phase C (remote): the manifest lives on the façade server — there
+    is **no** local ``meta.json`` on the receiving host.
 
     Known limitation (Phase C): ``description`` and ``expires_at`` are
     returned as empty strings because the façade does not currently
@@ -463,21 +778,44 @@ def tool_agent_fetch_file(
     acceptable because the Hermes caller already has the full
     ADR-007 message body (which contains both fields) from the
     original ``agent_send_file`` notification.
-
-    Phase A (local / Store): reads ``meta.json`` from the staging dir
-    and resolves the on-disk path with ACL checks.
     """
-    # --- Phase C: remote download via HttpBusStore (no local manifest) ---
-    if isinstance(store, HttpBusStore):
-        import tempfile as _tf
-        from pathlib import Path as _Path
+    import tempfile as _tf
 
-        # Use mkdtemp (persistent) not TemporaryDirectory (context manager).
-        # TemporaryDirectory deletes the dir on __exit__, so the returned
-        # path would point to a deleted file.  mkdtemp creates the dir and
-        # leaves it alive — the caller is responsible for cleanup (the
-        # LLM tool that reads the file consumes it, then the OS reclaims
-        # the temp dir on reboot or via a janitor sweep).
+    bus_url = os.environ.get("A2A_BUS_URL", "").strip()
+
+    if bus_url:
+        # --- v0.7.2: façade download when A2A_BUS_URL is set ---
+        api_key = os.environ.get("A2A_FACADE_API_KEY", "")
+        download_url = f"{bus_url.rstrip('/')}/transfers/{transfer_id}"
+        tmp_dir = _tf.mkdtemp(prefix="a2a_fetch_")
+
+        try:
+            dl = _facade_download(
+                url=download_url,
+                api_key=api_key,
+                dest_dir=tmp_dir,
+                verify=verify,
+            )
+        except FileNotFoundError:
+            return {"error": {"code": "TRANSFER_NOT_FOUND", "message": transfer_id}}
+        except PermissionError as e:
+            return {"error": {"code": "TRANSFER_ACL_DENIED", "message": str(e)}}
+        except ValueError as e:
+            return {"error": {"code": "TRANSFER_HASH_MISMATCH", "message": str(e)}}
+
+        file_stat = dl.path.stat()
+        return {
+            "transfer_id": transfer_id,
+            "path": str(dl.path),
+            "size": file_stat.st_size,
+            "sha256": dl.sha256,
+            "filename": dl.filename,
+            "description": "",
+            "expires_at": "",
+        }
+
+    if isinstance(store, HttpBusStore):
+        # --- Phase C: remote download via HttpBusStore (pre-v0.7.2 path) ---
         tmp_dir = _tf.mkdtemp(prefix="a2a_fetch_")
         try:
             local_path = store.download_transfer(
@@ -492,27 +830,22 @@ def tool_agent_fetch_file(
             return {"error": {"code": "TRANSFER_HASH_MISMATCH", "message": str(e)}}
 
         # Build minimal metadata from the downloaded file itself.
-        # The façade already verified SHA-256 via X-Transfer-SHA256
-        # header inside download_transfer(); re-verify only when
-        # the caller explicitly requests it (belt-and-suspenders).
-        local_file = _Path(local_path)
+        local_file = Path(local_path)
         file_stat = local_file.stat()
-        sha256_hex: str | None = None
+        dl_sha: str | None = None
 
         if verify:
-            import hashlib as _h
-
-            h = _h.sha256()
+            h = hashlib.sha256()
             with open(local_path, "rb") as f:
                 for chunk in iter(lambda: f.read(64 * 1024), b""):
                     h.update(chunk)
-            sha256_hex = h.hexdigest()
+            dl_sha = h.hexdigest()
 
         return {
             "transfer_id": transfer_id,
             "path": str(local_path),
             "size": file_stat.st_size,
-            "sha256": sha256_hex or "",
+            "sha256": dl_sha or "",
             "filename": local_file.name,
             "description": "",
             "expires_at": "",
@@ -534,9 +867,7 @@ def tool_agent_fetch_file(
         return {"error": {"code": "TRANSFER_ACL_DENIED", "message": str(e)}}
 
     if verify:
-        import hashlib as _h
-
-        h = _h.sha256()
+        h = hashlib.sha256()
         with open(path, "rb") as f:
             for chunk in iter(lambda: f.read(64 * 1024), b""):
                 h.update(chunk)
