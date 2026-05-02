@@ -1,8 +1,8 @@
 # ADR-007 — File Transfer Primitive (Out-of-Band Payload)
 
-- **Status:** Accepted — implementation pending (v0.7.0 / v0.7.1)
+- **Status:** Accepted — implemented (v0.7.0 same-machine, v0.7.1–v0.7.2 façade Phase C, v0.7.4–v0.7.5 cross-NAT hardening)
 - **Date:** 2026-05-01
-- **Last updated:** 2026-05-01 (added §4.3 sleeping-nodes caveat and §5.3 auto-extend open question after Vincent review)
+- **Last updated:** 2026-05-02 (updated status to reflect shipped cross-machine transfer; added §8 post-implementation notes for #42 and #44)
 - **Context window:** v0.6.2 → v0.7
 - **Authors:** VLBeauClaudeOpus (architect, `vlbeau-opus`), Vincent Lefebvre
 - **Related issue:** [#33](https://github.com/vlefebvre21/a2a-mcp-bridge/issues/33)
@@ -387,3 +387,30 @@ bypass LLM context). See §3.2.
 - [ADR-006.1 — HTTP Bus Facade](ADR-006.1-http-bus-facade.md) (façade being extended in PR2)
 - [Rate limiter pattern](../../src/a2a_mcp_bridge/rate_limit.py) — `prune_stale` model reused for `_transfer_sweep`
 - [Signal dir pattern](../../src/a2a_mcp_bridge/signals.py) — `A2A_SIGNAL_DIR` resolution model reused for `A2A_TRANSFER_DIR`
+
+## 8. Post-implementation notes
+
+### 8.1 Bug #42 — `_iso_utc` rejects ISO strings from the HTTP façade (v0.7.3 / v0.7.4)
+
+**Problem.** When the HTTP façade returned transfer metadata that included ISO-8601 timestamp strings (e.g. `"2026-05-02T19:42:41Z"`), the client-side `_iso_utc()` helper raised a `ValueError` because it only accepted `datetime` objects, not raw strings from the JSON wire format.
+
+**Fix (v0.7.3).** `_iso_utc` was updated to accept either a `datetime` or a string, parsing ISO-8601 strings via `datetime.fromisoformat()` with a timezone-aware fallback for the trailing `Z` suffix.
+
+**Follow-up fix (v0.7.4, PR #43).** When `A2A_BUS_URL` is set, `_rewrite_transfer_url()` rewrites the locator URL from `http://127.0.0.1:<port>/transfers/<id>` to `https://<bus_url_host>/transfers/<id>`. This is critical for NAT'd recipients (e.g. a Mac behind a residential router) that cannot reach the VPS's loopback address. The rewrite happens in `agent_fetch_file` before dispatch, so the recipient's `GET /transfers/<id>` targets the correct public host.
+
+### 8.2 Bug #44 — 403 Forbidden on every cross-host fetch, missing `X-Agent-Id` in `_facade_download` (v0.7.5)
+
+**Problem.** The HTTP façade enforces recipient ACL on `GET /transfers/<id>`: the request must carry both `Authorization: Bearer <token>` **and** `X-Agent-Id: <agent_id>` (must match `transfers.recipient_id`). However, `_facade_download` in `tools.py` was added before this ACL enforcement and did not emit the `X-Agent-Id` header, causing every cross-host fetch to return 403 Forbidden.
+
+**Fix (v0.7.5, PR #45).** `_facade_download` now accepts an optional `agent_id` parameter. When non-empty, it injects `X-Agent-Id: <agent_id>` into the `urllib.request.Request` headers alongside the existing `Authorization` bearer token.
+
+### 8.3 Lesson: two client paths for transfer download
+
+The cross-machine download path splits between two implementations:
+
+| Client | Module | HTTP library | Header handling |
+|---|---|---|---|
+| `HttpBusStore.download_transfer` | `bus_store.py` ~l.420 | `httpx` | Headers set at client init (l.202) |
+| `_facade_download` | `tools.py` ~l.442 | stdlib `urllib.request` | Headers set per-request; `X-Agent-Id` added in v0.7.5 |
+
+Both must emit `X-Agent-Id` for ACL enforcement. The stdlib path deliberately avoids a hard `httpx` dependency but requires explicit header wiring. This duplication is a consequence of the v0.7.2 "facade priority" dispatch (when `A2A_BUS_URL` is set, `agent_fetch_file` always routes via `_facade_download` even for Store backends). Any future ACL-related header changes must be applied to **both** paths.
