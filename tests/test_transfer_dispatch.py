@@ -305,6 +305,9 @@ def test_fetch_file_http_locator_with_bus_url(
         assert call_kwargs["url"] == "http://bus.test:8080/transfers/remote-fetch-tid"
         assert call_kwargs["api_key"] == "test-key-789"
         assert call_kwargs["verify"] is True
+        # Issue #44: caller_id must be forwarded as agent_id so the façade
+        # can enforce the recipient ACL on GET /transfers/<id>.
+        assert call_kwargs["agent_id"] == "bob"
 
     assert "error" not in result
     assert result["transfer_id"] == tid
@@ -1016,3 +1019,88 @@ def test_rewrite_transfer_url_no_bus_url(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.delenv("A2A_BUS_URL", raising=False)
     result = _rewrite_transfer_url("http://127.0.0.1:8080/transfers/abc-123")
     assert result == "http://127.0.0.1:8080/transfers/abc-123"
+
+
+# ---------------------------------------------------------------------------
+# Issue #44: _facade_download must send X-Agent-Id header so the façade
+# can enforce the recipient ACL on GET /transfers/<id>.
+# ---------------------------------------------------------------------------
+
+
+def test_facade_download_sends_x_agent_id_header(tmp_path: Path) -> None:
+    """When agent_id is provided, _facade_download sets the X-Agent-Id header
+    on the urllib Request, so the façade can match it against recipient_id.
+    """
+    content = b"tiny"
+    expected_sha = hashlib.sha256(content).hexdigest()
+
+    resp = MagicMock()
+    resp.headers = MagicMock()
+    resp.headers.get = MagicMock(
+        side_effect=lambda key, default="": {
+            "Content-Disposition": 'attachment; filename="f.txt"',
+            "X-Transfer-SHA256": expected_sha,
+        }.get(key, default)
+    )
+    read_iter = iter([content, b""])
+    resp.read = lambda size=-1: next(read_iter, b"")
+    resp.close = MagicMock()
+
+    captured: dict = {}
+
+    def _fake_urlopen(req):
+        captured["headers"] = dict(req.headers)
+        return resp
+
+    with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
+        _facade_download(
+            url="http://bus.test:8080/transfers/tid-xyz",
+            api_key="key-abc",
+            dest_dir=str(tmp_path / "dl"),
+            verify=True,
+            agent_id="vlbeau-macqwen36",
+        )
+
+    # urllib normalises header keys to Title-Case.
+    assert captured["headers"].get("Authorization") == "Bearer key-abc"
+    assert captured["headers"].get("X-agent-id") == "vlbeau-macqwen36"
+
+
+def test_facade_download_omits_x_agent_id_when_empty(tmp_path: Path) -> None:
+    """When agent_id='' (default), the X-Agent-Id header is NOT emitted.
+
+    Preserves backward compatibility for any caller that relied on the
+    old signature (no recipient-ACL transfers).
+    """
+    content = b"tiny"
+    expected_sha = hashlib.sha256(content).hexdigest()
+
+    resp = MagicMock()
+    resp.headers = MagicMock()
+    resp.headers.get = MagicMock(
+        side_effect=lambda key, default="": {
+            "Content-Disposition": 'attachment; filename="f.txt"',
+            "X-Transfer-SHA256": expected_sha,
+        }.get(key, default)
+    )
+    read_iter = iter([content, b""])
+    resp.read = lambda size=-1: next(read_iter, b"")
+    resp.close = MagicMock()
+
+    captured: dict = {}
+
+    def _fake_urlopen(req):
+        captured["headers"] = dict(req.headers)
+        return resp
+
+    with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
+        _facade_download(
+            url="http://bus.test:8080/transfers/tid-xyz",
+            api_key="key-abc",
+            dest_dir=str(tmp_path / "dl"),
+            verify=True,
+            # agent_id omitted -> default ""
+        )
+
+    assert captured["headers"].get("Authorization") == "Bearer key-abc"
+    assert "X-agent-id" not in captured["headers"]

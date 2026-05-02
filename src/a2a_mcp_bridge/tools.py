@@ -444,6 +444,7 @@ def _facade_download(
     api_key: str,
     dest_dir: str,
     verify: bool = True,
+    agent_id: str = "",
 ) -> _FacadeDownloadResult:
     """Download a transfer file from the bus façade.
 
@@ -460,6 +461,9 @@ def _facade_download(
         dest_dir: Directory to write the file into (created if needed).
         verify: If True, verify sha256 against ``X-Transfer-SHA256``
             header when present.
+        agent_id: Caller's agent_id, sent as the ``X-Agent-Id`` header so
+            the façade can enforce recipient ACL. Empty string means
+            unauthenticated (will 403 on any recipient-ACL'd transfer).
 
     Returns:
         A :class:`_FacadeDownloadResult` with ``path``, ``sha256``,
@@ -475,9 +479,13 @@ def _facade_download(
     import urllib.error
     import urllib.request
 
+    headers = {"Authorization": f"Bearer {api_key}"}
+    if agent_id:
+        headers["X-Agent-Id"] = agent_id
+
     req = urllib.request.Request(
         url,
-        headers={"Authorization": f"Bearer {api_key}"},
+        headers=headers,
     )
 
     try:
@@ -797,6 +805,7 @@ def tool_agent_fetch_file(
                 api_key=api_key,
                 dest_dir=tmp_dir,
                 verify=verify,
+                agent_id=caller_id,
             )
         except FileNotFoundError:
             return {"error": {"code": "TRANSFER_NOT_FOUND", "message": transfer_id}}
