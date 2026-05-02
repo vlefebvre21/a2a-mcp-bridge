@@ -6,6 +6,98 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.5] — 2026-05-02
+
+### Fixed
+
+- **File transfer facade fetch — missing `X-Agent-Id` header caused 403**
+  ([#44](https://github.com/vlefebvre21/a2a-mcp-bridge/issues/44),
+  [#45](https://github.com/vlefebvre21/a2a-mcp-bridge/pull/45)).
+  `_facade_download()` in `tools.py` issued `GET /transfers/{id}` without the
+  `X-Agent-Id` header, so the facade could not match the caller against
+  `record["recipient_id"]` and returned `TRANSFER_ACL_DENIED`. Cross-machine
+  transfers therefore reached the facade but failed authorization. Fix adds
+  an `agent_id: str = ""` parameter to `_facade_download` and has
+  `tool_agent_fetch_file` forward `caller_id` into it; the header is injected
+  when non-empty. Default `""` preserves backward-compat for same-machine
+  calls that don't need the header.
+  ([tools.py](src/a2a_mcp_bridge/tools.py))
+- Extended tests: 2 new unit tests for header injection + 1 existing test
+  updated. File-transfer suite: 40/40 passing; full suite: 342/342.
+
+### Validated
+
+- Live end-to-end VPS→Mac transfer proven cross-NAT (transfer
+  `da4ba348-d068-4fe1-b548-6b7811860fe3`, sha256 matched exactly on fetch).
+  ADR-007 Phase C is now effectively Accepted-implemented for the two
+  exercised client paths (`_facade_download` and `HttpBusStore`).
+
+## [0.7.4] — 2026-05-02
+
+### Fixed
+
+- **File transfer locator URL used `127.0.0.1` on the facade host, breaking
+  cross-machine fetch** ([#42](https://github.com/vlefebvre21/a2a-mcp-bridge/issues/42),
+  [#43](https://github.com/vlefebvre21/a2a-mcp-bridge/pull/43)). When an agent
+  on the facade host (e.g. the VPS) staged a file, the locator embedded in
+  the bus message referenced the loopback address, so a remote recipient
+  (e.g. a NAT'd Mac) could not resolve it. Fix introduces a helper
+  `_rewrite_transfer_url()` that reassembles the locator using the
+  `A2A_BUS_URL` scheme+netloc when set; falls back transparently to the
+  original locator otherwise (same-machine path unaffected).
+  Covered by 4 unit tests spanning the full matrix
+  (localhost → public, same host, `file://`, `A2A_BUS_URL` unset).
+
+## [0.7.3] — 2026-05-02
+
+### Fixed
+
+- **`_iso_utc()` accepted only `datetime`, crashed on ISO string from facade**
+  (commit [40628ab](https://github.com/vlefebvre21/a2a-mcp-bridge/commit/40628ab)).
+  When the facade serialized transfer records over HTTP, timestamp fields
+  arrived as ISO-8601 strings, not `datetime` objects. `_iso_utc()` raised
+  `AttributeError` on the client side during locator resolution. Fix makes
+  the helper accept either a `datetime` or an ISO string (`fromisoformat()`
+  round-trip) and returns a normalized UTC ISO string in both cases.
+
+## [0.7.2] — 2026-05-02
+
+### Fixed
+
+- **Dispatch path ignored `A2A_BUS_URL` — file-transfer messages hit the
+  local SQLite instead of the facade**
+  ([#41](https://github.com/vlefebvre21/a2a-mcp-bridge/pull/41)). When
+  `A2A_BUS_URL` was configured, `agent_send_file` was still routing the
+  ADR-007 reference message through the local SQLite bus adapter instead of
+  the HTTP facade. Recipients on other hosts therefore never received the
+  `kind: "file_transfer"` message. Fix switches dispatch to the facade HTTP
+  client when `A2A_BUS_URL` is set, mirroring the `agent_send` path.
+- **PR #41 review follow-ups**: C3 filename handling, C4 sha256 propagation
+  through the HTTP layer, C5 additional test coverage
+  (commit [14a8912](https://github.com/vlefebvre21/a2a-mcp-bridge/commit/14a8912)).
+
+## [0.7.1] — 2026-05-02
+
+### Added — HTTP File Transfer Endpoints (ADR-007 Phase C)
+
+- **Facade-side file-transfer endpoints**
+  ([#40](https://github.com/vlefebvre21/a2a-mcp-bridge/pull/40)). Exposes the
+  ADR-007 Option A transfer primitive over HTTP so that remote agents
+  participating through the facade can stage, fetch, and delete files. New
+  endpoints on `facade.py`:
+  - `POST /transfers/stage` — server-side staging from an uploaded payload,
+    returns a `TransferRecord` (sha256, size, locator, TTL).
+  - `GET /transfers/{transfer_id}` — streaming download; ACL-checked against
+    `X-Agent-Id` header or `agent_id` query param, matched against
+    `record["recipient_id"]`.
+  - `DELETE /transfers/{transfer_id}` — scoped to sender/recipient.
+- **Client helpers in `tools.py`**: `_facade_upload`, `_facade_download`,
+  `_facade_delete` implement the HTTP side of `agent_send_file` /
+  `agent_fetch_file` / `agent_delete_file` when `A2A_BUS_URL` is configured.
+  Same-machine path (shared `A2A_TRANSFER_DIR`) remains the default.
+- Unblocks Phase C of ADR-007 (cross-machine transfer) — previously deferred
+  from v0.7.0.
+
 ## [0.7.0] — 2026-05-01
 
 ### Added — File Transfer Primitive (ADR-007 Option A)
