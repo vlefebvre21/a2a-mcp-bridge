@@ -975,3 +975,44 @@ def test_iso_utc_accepts_float() -> None:
     result = _iso_utc(1746230400.0)
     assert result.endswith("Z")
     assert "2025" in result or "2026" in result
+
+
+# ---------------------------------------------------------------------------
+# Issue #42 companion: _rewrite_transfer_url for cross-machine locator
+# ---------------------------------------------------------------------------
+
+
+def test_rewrite_transfer_url_localhost_to_public(monkeypatch: pytest.MonkeyPatch) -> None:
+    """127.0.0.1 locator rewritten to A2A_BUS_URL host."""
+    from a2a_mcp_bridge.tools import _rewrite_transfer_url
+
+    monkeypatch.setenv("A2A_BUS_URL", "http://46.224.117.9:8080")
+    result = _rewrite_transfer_url("http://127.0.0.1:8080/transfers/abc-123")
+    assert result == "http://46.224.117.9:8080/transfers/abc-123"
+
+
+def test_rewrite_transfer_url_same_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Locator already points to A2A_BUS_URL host → unchanged."""
+    from a2a_mcp_bridge.tools import _rewrite_transfer_url
+
+    monkeypatch.setenv("A2A_BUS_URL", "http://46.224.117.9:8080")
+    result = _rewrite_transfer_url("http://46.224.117.9:8080/transfers/abc-123")
+    assert result == "http://46.224.117.9:8080/transfers/abc-123"
+
+
+def test_rewrite_transfer_url_file_scheme_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
+    """file:// locator is never rewritten, even with A2A_BUS_URL set."""
+    from a2a_mcp_bridge.tools import _rewrite_transfer_url
+
+    monkeypatch.setenv("A2A_BUS_URL", "http://46.224.117.9:8080")
+    result = _rewrite_transfer_url("file:///tmp/a2a/transfers/abc-123/data.bin")
+    assert result == "file:///tmp/a2a/transfers/abc-123/data.bin"
+
+
+def test_rewrite_transfer_url_no_bus_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No A2A_BUS_URL → locator returned unchanged."""
+    from a2a_mcp_bridge.tools import _rewrite_transfer_url
+
+    monkeypatch.delenv("A2A_BUS_URL", raising=False)
+    result = _rewrite_transfer_url("http://127.0.0.1:8080/transfers/abc-123")
+    assert result == "http://127.0.0.1:8080/transfers/abc-123"
