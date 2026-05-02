@@ -62,22 +62,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.7.2] — 2026-05-02
 
-### Fixed
-
-- **Dispatch path ignored `A2A_BUS_URL` — file-transfer messages hit the
-  local SQLite instead of the facade**
-  ([#41](https://github.com/vlefebvre21/a2a-mcp-bridge/pull/41)). When
-  `A2A_BUS_URL` was configured, `agent_send_file` was still routing the
-  ADR-007 reference message through the local SQLite bus adapter instead of
-  the HTTP facade. Recipients on other hosts therefore never received the
-  `kind: "file_transfer"` message. Fix switches dispatch to the facade HTTP
-  client when `A2A_BUS_URL` is set, mirroring the `agent_send` path.
-- **PR #41 review follow-ups**: C3 filename handling, C4 sha256 propagation
-  through the HTTP layer, C5 additional test coverage
-  (commit [14a8912](https://github.com/vlefebvre21/a2a-mcp-bridge/commit/14a8912)).
-
-## [0.7.1] — 2026-05-02
-
 ### Added — HTTP File Transfer Endpoints (ADR-007 Phase C)
 
 - **Facade-side file-transfer endpoints**
@@ -97,6 +81,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Same-machine path (shared `A2A_TRANSFER_DIR`) remains the default.
 - Unblocks Phase C of ADR-007 (cross-machine transfer) — previously deferred
   from v0.7.0.
+
+### Fixed
+
+- **Dispatch path ignored `A2A_BUS_URL` — file-transfer messages hit the
+  local SQLite instead of the facade**
+  ([#41](https://github.com/vlefebvre21/a2a-mcp-bridge/pull/41)). When
+  `A2A_BUS_URL` was configured, `agent_send_file` was still routing the
+  ADR-007 reference message through the local SQLite bus adapter instead of
+  the HTTP facade. Recipients on other hosts therefore never received the
+  `kind: "file_transfer"` message. Fix switches dispatch to the facade HTTP
+  client when `A2A_BUS_URL` is set, mirroring the `agent_send` path.
+- **PR #41 review follow-ups**: C3 filename handling, C4 sha256 propagation
+  through the HTTP layer, C5 additional test coverage
+  (commit [14a8912](https://github.com/vlefebvre21/a2a-mcp-bridge/commit/14a8912)).
+
+### Note
+
+- v0.7.1 was never released as a standalone version — the facade-side
+  endpoints (PR #40) and the dispatch fix (PR #41) were bundled into v0.7.2
+  as a single bump.
 
 ## [0.7.0] — 2026-05-01
 
