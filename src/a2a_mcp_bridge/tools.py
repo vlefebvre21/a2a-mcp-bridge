@@ -910,8 +910,16 @@ def tool_agent_delete_file(
     return {"deleted": True, "transfer_id": transfer_id}
 
 
-def _iso_utc(epoch: float) -> str:
-    """Return ``epoch`` as ISO-8601 Z string."""
+def _iso_utc(epoch_or_iso: float | str) -> str:
+    """Return ``epoch_or_iso`` as ISO-8601 Z string.
+
+    Accepts either a numeric epoch (from local manifests / old mocks)
+    or an ISO-8601 string (from the façade API).  Strings are
+    normalised to Z-suffix; numeric values are converted.
+    """
     from datetime import UTC, datetime
 
-    return datetime.fromtimestamp(epoch, UTC).isoformat().replace("+00:00", "Z")
+    if isinstance(epoch_or_iso, str):
+        # Already ISO — just normalise +00:00 → Z
+        return epoch_or_iso.replace("+00:00", "Z")
+    return datetime.fromtimestamp(epoch_or_iso, UTC).isoformat().replace("+00:00", "Z")

@@ -929,3 +929,49 @@ def test_fetch_file_http_store_hash_mismatch(
 
     result = tool_agent_fetch_file(mock_store, "alice", "tid-bad")
     assert result["error"]["code"] == "TRANSFER_HASH_MISMATCH"
+
+
+# ---------------------------------------------------------------------------
+# Issue #42: facade returns ISO string for expires_at, not epoch float
+# ---------------------------------------------------------------------------
+
+
+def test_send_file_facade_iso_expires_at(
+    tmp_path: Path, local_store: Store, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Facade returns expires_at as ISO string — must not crash _iso_utc."""
+    monkeypatch.setenv("A2A_BUS_URL", "http://bus.test:8080")
+    monkeypatch.setenv("A2A_FACADE_API_KEY", "k")
+
+    src = tmp_path / "doc.txt"
+    src.write_text("hello")
+
+    upload_result = {
+        "transfer_id": "tid-iso", "filename": "doc.txt", "size": 5,
+        "sha256": "a" * 64,
+        "expires_at": "2026-05-03T00:00:00+00:00",  # ISO string from facade
+        "locator": {"scheme": "http", "url": "http://bus/transfers/tid-iso"},
+    }
+
+    with patch("a2a_mcp_bridge.tools._facade_upload", return_value=upload_result):
+        result = tool_agent_send_file(local_store, "alice", "bob", str(src))
+
+    assert "error" not in result
+    assert result["expires_at"] == "2026-05-03T00:00:00Z"
+
+
+def test_iso_utc_accepts_string() -> None:
+    """_iso_utc passes through ISO strings with +00:00 → Z normalisation."""
+    from a2a_mcp_bridge.tools import _iso_utc
+
+    assert _iso_utc("2026-05-03T00:00:00+00:00") == "2026-05-03T00:00:00Z"
+    assert _iso_utc("2026-05-03T00:00:00Z") == "2026-05-03T00:00:00Z"
+
+
+def test_iso_utc_accepts_float() -> None:
+    """_iso_utc converts epoch float to ISO Z string."""
+    from a2a_mcp_bridge.tools import _iso_utc
+
+    result = _iso_utc(1746230400.0)
+    assert result.endswith("Z")
+    assert "2025" in result or "2026" in result
