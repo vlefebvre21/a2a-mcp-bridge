@@ -338,3 +338,109 @@ class TestAuth:
     def test_health_never_requires_auth(self, authed_client: TestClient) -> None:
         resp = authed_client.get("/health")
         assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Send intent wake policy (ADR-002)
+# ---------------------------------------------------------------------------
+
+class TestSendIntentWakePolicy:
+    """Verify that send_handler respects ADR-002 wake policy.
+
+    intent=fyi must NOT trigger waker.wake(); all other intents must.
+    Mirrors the same checks in test_tools.py for the MCP tool path.
+    """
+
+    @pytest.fixture()
+    def waker_client(self) -> TestClient:
+        """TestClient with a recording WebhookWaker mock."""
+        from unittest.mock import MagicMock
+
+        from a2a_mcp_bridge.wake import WakeEntry
+
+        registry = {"bob": WakeEntry(wake_webhook_url="http://localhost:9999/wake")}
+        mock_waker = MagicMock()
+        mock_waker._registry = registry
+        mock_waker._shared_secret = "test-secret"
+        # Make has() work correctly
+        mock_waker.has = lambda agent_id: agent_id in registry
+        mock_waker.wake.return_value = True
+
+        app = create_app(db_path=":memory:", waker=mock_waker)
+        client = TestClient(app)
+        # Stash the mock so tests can inspect .wake.call_count
+        client._waker_mock = mock_waker  # type: ignore[attr-defined]
+        return client
+
+    def test_fyi_intent_does_not_wake(self, waker_client: TestClient) -> None:
+        _register(waker_client, "alice")
+        _register(waker_client, "bob")
+        resp = waker_client.post(
+            "/send",
+            json={"sender": "alice", "recipient": "bob", "body": "fyi", "intent": "fyi"},
+        )
+        assert resp.status_code == 200
+        assert waker_client._waker_mock.wake.call_count == 0
+
+    def test_execute_intent_does_wake(self, waker_client: TestClient) -> None:
+        _register(waker_client, "alice")
+        _register(waker_client, "bob")
+        resp = waker_client.post(
+            "/send",
+            json={"sender": "alice", "recipient": "bob", "body": "do it", "intent": "execute"},
+        )
+        assert resp.status_code == 200
+        assert waker_client._waker_mock.wake.call_count == 1
+
+    def test_triage_intent_does_wake(self, waker_client: TestClient) -> None:
+        _register(waker_client, "alice")
+        _register(waker_client, "bob")
+        resp = waker_client.post(
+            "/send",
+            json={"sender": "alice", "recipient": "bob", "body": "triage", "intent": "triage"},
+        )
+        assert resp.status_code == 200
+        assert waker_client._waker_mock.wake.call_count == 1
+
+    def test_default_intent_wakes(self, waker_client: TestClient) -> None:
+        """SendBody defaults intent to 'triage', which is a wake intent."""
+        _register(waker_client, "alice")
+        _register(waker_client, "bob")
+        resp = waker_client.post(
+            "/send",
+            json={"sender": "alice", "recipient": "bob", "body": "default"},
+        )
+        assert resp.status_code == 200
+        assert waker_client._waker_mock.wake.call_count == 1
+
+    def test_review_intent_wakes(self, waker_client: TestClient) -> None:
+        _register(waker_client, "alice")
+        _register(waker_client, "bob")
+        resp = waker_client.post(
+            "/send",
+            json={"sender": "alice", "recipient": "bob", "body": "review", "intent": "review"},
+        )
+        assert resp.status_code == 200
+        assert waker_client._waker_mock.wake.call_count == 1
+
+    def test_question_intent_wakes(self, waker_client: TestClient) -> None:
+        _register(waker_client, "alice")
+        _register(waker_client, "bob")
+        resp = waker_client.post(
+            "/send",
+            json={"sender": "alice", "recipient": "bob", "body": "question", "intent": "question"},
+        )
+        assert resp.status_code == 200
+        assert waker_client._waker_mock.wake.call_count == 1
+
+    def test_invalid_intent_downgrades_and_wakes(self, waker_client: TestClient) -> None:
+        """Unknown intent is downgraded to DEFAULT_INTENT ('execute') which wakes."""
+        _register(waker_client, "alice")
+        _register(waker_client, "bob")
+        resp = waker_client.post(
+            "/send",
+            json={"sender": "alice", "recipient": "bob", "body": "banana", "intent": "banana"},
+        )
+        assert resp.status_code == 200
+        # 'banana' normalizes to 'execute' (DEFAULT_INTENT), which wakes
+        assert waker_client._waker_mock.wake.call_count == 1
