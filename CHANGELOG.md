@@ -6,6 +6,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.6] — 2026-05-04
+
+### Fixed
+
+- **Facade `send_handler` violated ADR-002: `intent=fyi` still triggered webhook wake-up**
+  ([#47](https://github.com/vlefebvre21/a2a-mcp-bridge/issues/47)).
+  The MCP tool path (`tools.py`) already skipped the webhook for no-wake intents,
+  but the HTTP facade path (`facade.py`) called `waker.wake()` unconditionally.
+  Fix adds the same `wakes(normalized_intent)` check to `send_handler`, so
+  `intent=fyi` messages are persisted and signal `agent_subscribe` but do NOT
+  spawn a recipient LLM session. Matches the ADR-002 contract and the existing
+  tools.py behaviour.
+
+### Added
+- 7 new tests in `test_facade.py` (`TestSendHandlerWakeBehavior`): cover `intent=fyi` skip, `execute` wake, default behaviour, `triage` wake, invalid downgrade, `question` wake, `review` wake.
+  Full suite: 349/349 passing.
+
 ## [0.7.5] — 2026-05-02
 
 ### Fixed

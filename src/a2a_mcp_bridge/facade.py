@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from . import __version__
+from .intents import normalize_intent, wakes
 from .rate_limit import FacadeRateLimiters, build_limiters, ratelimit_middleware_factory
 from .signals import SignalDir
 from .store import Store
@@ -158,11 +159,24 @@ def send_handler(
             )
         raise
 
+    # Wake policy (ADR-002): skip the webhook for no-wake intents (``fyi``).
+    # The message is still persisted and still signals agent_subscribe; we
+    # just don't spawn a fresh LLM session for notifications that do not
+    # require immediate action.  Mirrors the same check in tools.py.
     if waker is not None:
-        try:
-            waker.wake(body.recipient, body.sender)
-        except Exception:  # pragma: no cover — defensive
-            logger.warning("waker.wake(%s) failed (best-effort)", body.recipient, exc_info=True)
+        normalized_intent, _ = normalize_intent(body.intent)
+        if wakes(normalized_intent):
+            try:
+                waker.wake(body.recipient, body.sender)
+            except Exception:  # pragma: no cover — defensive
+                logger.warning("waker.wake(%s) failed (best-effort)", body.recipient, exc_info=True)
+        else:
+            logger.info(
+                "wake skipped (intent=%s) for target=%s from sender=%s",
+                normalized_intent,
+                body.recipient,
+                body.sender,
+            )
     if signal_dir:
         signal_dir.notify(body.recipient)
 
