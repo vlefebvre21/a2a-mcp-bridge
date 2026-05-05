@@ -12,6 +12,7 @@ import hmac
 import logging
 import os
 import shutil
+import sqlite3
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager

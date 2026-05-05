@@ -226,7 +226,7 @@ class HttpBusStore:
             resp.raise_for_status()
         except self._httpx.HTTPError as exc:
             log.warning("upsert_agent failed (best-effort): %s", exc)
-        except Exception as exc:  # noqa: BLE001 — truly unexpected errors still best-effort
+        except Exception as exc:
             log.warning("upsert_agent failed (unexpected): %s", exc)
 
     # -- messaging ---------------------------------------------------------
@@ -409,7 +409,7 @@ class HttpBusStore:
         if resp.status_code >= 400:
             try:
                 detail = resp.json()
-            except Exception as exc:  # noqa: BLE001 — defensive: never block on stale transfers
+            except Exception:
                 detail = resp.text
             raise ValueError(f"upload_transfer HTTP {resp.status_code}: {detail}")
 

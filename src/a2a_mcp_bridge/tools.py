@@ -9,10 +9,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-# Default timeout for all outbound HTTP calls (upload/download, webhook, façade).
-# Overridable via A2A_NETWORK_TIMEOUT env var (seconds).
-_NETWORK_TIMEOUT: float = 30.0
-
 from .bus_store import BusStore, HttpBusStore
 from .intents import DEFAULT_INTENT, normalize_intent, wakes
 from .logging_ext import hash_body, log_event
@@ -27,6 +23,10 @@ from .transfers import (
 from .wake import WebhookWaker
 
 logger = logging.getLogger("a2a_mcp_bridge.tools")
+
+# Default timeout for outbound HTTP calls (upload/download façade).
+# Overridable via A2A_NETWORK_TIMEOUT env var (seconds).
+_NETWORK_TIMEOUT: float = 30.0
 
 # Default long-poll cap for agent_subscribe — keep below typical MCP client
 # timeouts (60 s) so we always answer cleanly.

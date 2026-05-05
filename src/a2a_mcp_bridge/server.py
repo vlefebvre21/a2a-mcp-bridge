@@ -29,6 +29,7 @@ from .tools import (
     tool_agent_send_file,
     tool_agent_subscribe,
 )
+from .validation import validate_tool_params
 from .wake import WebhookWaker, load_registry
 
 logger = logging.getLogger("a2a_mcp_bridge")
@@ -296,6 +297,20 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
         webhook registry, fires an HMAC-signed wake-up POST to the recipient's
         local gateway endpoint. SKIPPED for ``intent=fyi`` (ADR-002).
         """
+        # Enforce message body size limit before processing.
+        max_bytes = int(os.environ.get("A2A_MAX_MESSAGE_BYTES", str(1 * 1024 * 1024)))
+        body_bytes = len(message.encode("utf-8"))
+        if body_bytes > max_bytes:
+            from .exceptions import MessageTooLargeError
+            raise MessageTooLargeError(
+                f"Incoming message is {body_bytes} bytes, "
+                f"limit is {max_bytes} bytes "
+                f"(configure with A2A_MAX_MESSAGE_BYTES)"
+            )
+        validate_tool_params(
+            tool="agent_send",
+            params={"target": target, "metadata": metadata, "intent": intent},
+        )
         return tool_agent_send(
             store, agent_id, target, message, metadata, signal_dir, _load_waker_if_stale(),
             intent=intent,
@@ -441,6 +456,10 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
                 for m in r["messages"]:
                     handle(m)
         """
+        validate_tool_params(
+            tool="agent_subscribe",
+            params={"timeout_seconds": timeout_seconds, "limit": limit},
+        )
         return tool_agent_subscribe(
             store,
             agent_id,
@@ -500,6 +519,15 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
             "message_id"}`` on success, ``{"error": {"code", "message"}}``
             otherwise.
         """
+        validate_tool_params(
+            tool="agent_send_file",
+            params={
+                "target": target,
+                "file_path": file_path,
+                "description": description,
+                "intent": intent,
+            },
+        )
         return tool_agent_send_file(
             store, agent_id, target, file_path,
             description=description, expires_in=expires_in,
@@ -514,11 +542,19 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
         ``verify=True`` (default), sha256 is re-checked — ~50 ms per
         100 MB, negligible vs. silent-corruption risk.
         """
+        validate_tool_params(
+            tool="agent_fetch_file",
+            params={"transfer_id": transfer_id, "verify": verify},
+        )
         return tool_agent_fetch_file(store, agent_id, transfer_id, verify=verify)
 
     @mcp.tool()
     def agent_delete_file(transfer_id: str) -> dict[str, Any]:
         """Delete a staged transfer. Caller must be sender or recipient."""
+        validate_tool_params(
+            tool="agent_delete_file",
+            params={"transfer_id": transfer_id},
+        )
         return tool_agent_delete_file(store, agent_id, transfer_id)
 
     return mcp

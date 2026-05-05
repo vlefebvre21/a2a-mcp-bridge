@@ -3,9 +3,9 @@ from datetime import UTC, datetime
 
 import pytest
 
-from a2a_mcp_bridge.bus_store import _parse_message, _parse_agent_record
-from a2a_mcp_bridge.intents import normalize_intent, VALID_INTENTS, DEFAULT_INTENT
-from a2a_mcp_bridge.models import AgentId, MAX_BODY_BYTES
+from a2a_mcp_bridge.bus_store import _parse_agent_record, _parse_message
+from a2a_mcp_bridge.intents import DEFAULT_INTENT, VALID_INTENTS, normalize_intent
+from a2a_mcp_bridge.models import AgentId
 from a2a_mcp_bridge.tools import _parse_content_disposition
 
 
