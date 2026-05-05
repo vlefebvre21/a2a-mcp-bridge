@@ -40,16 +40,39 @@ and SQLite-backed.
 
 ## What it does
 
-Six MCP tools, all stable since v0.5:
+Six core MCP tools (stable since v0.5) plus five Capability Registry tools
+(introduced in v0.8.0):
 
-| Tool | Description |
-|---|---|
-| `agent_send(target, message, metadata=None)` | Drop a message in another agent's inbox. Returns a `message_id`. Fires a real-time signal and an optional HTTP webhook wake-up toward the recipient. |
-| `agent_inbox(limit=10, unread_only=True)` | Read messages addressed to the calling agent. Atomically marks them as read when `unread_only=True`. |
-| `agent_inbox_peek(since_ts=None, limit=50)` | Read-only inbox view — no mark-as-read. Safe for concurrent sessions to inspect the inbox without consuming messages. |
-| `agent_list(active_within_days=7)` | List agents seen on the bus in the given window, with their capabilities and last-seen timestamps. |
-| `agent_subscribe(timeout_seconds=30, limit=10)` | Long-poll primitive: blocks up to `timeout_seconds` (server-capped at 55 s) waiting for new messages. Returns instantly if messages are already pending. |
-| `agent_ping()` | Returns `{"server", "version", "agent_id"}`. Useful to detect a stale stdio child after a bridge upgrade. |
+**Core messaging tools:**
+
+- `agent_send(target, message, metadata=None)` — Drop a message in another
+  agent's inbox. Returns a `message_id`. Fires a real-time signal and an
+  optional HTTP webhook wake-up toward the recipient.
+- `agent_inbox(limit=10, unread_only=True)` — Read messages addressed to the
+  calling agent. Atomically marks them as read when `unread_only=True`.
+- `agent_inbox_peek(since_ts=None, limit=50)` — Read-only inbox view — no
+  mark-as-read. Safe for concurrent sessions to inspect the inbox without
+  consuming messages.
+- `agent_list(active_within_days=7)` — List agents seen on the bus in the
+  given window, with their capabilities and last-seen timestamps.
+- `agent_subscribe(timeout_seconds=30, limit=10)` — Long-poll primitive:
+  blocks up to `timeout_seconds` (server-capped at 55 s) waiting for new
+  messages. Returns instantly if messages are already pending.
+- `agent_ping()` — Returns `{"server", "version", "agent_id"}`. Useful to
+  detect a stale stdio child after a bridge upgrade.
+
+**Capability Registry tools:**
+
+- `capability_announce(payload)` — Register or update an agent's
+  capabilities in the registry.
+- `capability_query(keyword, max_cost)` — Query agents by keyword and/or
+  cost ceiling.
+- `capability_discover()` — List all available capabilities across all
+  registered agents.
+- `capability_find_best(skill, max_cost)` — Find the best-matching agents
+  for a specific skill keyword (scored).
+- `capability_ping(agent_id)` — Signal that an agent is still alive
+  (heartbeat ping).
 
 Backed by SQLite by default (zero-dep, single file). For remote/distributed
 setups, an optional HTTP facade (`serve-facade`) exposes the bus over REST —
@@ -861,6 +884,122 @@ a2a-mcp-bridge wake-registry init # build the webhook wake registry from ~/.herm
 | `--signal-dir` / `A2A_SIGNAL_DIR` | `/tmp/a2a-signals` | Signal directory for `subscribe` wake-ups. |
 | `--wake-registry` / `A2A_WAKE_REGISTRY` | `~/.a2a-wake-registry.json` | Webhook wake registry path. |
 
+## Capability Registry
+
+The Capability Registry provides **centralized discovery of Hermes agent
+capabilities** on the bus. Instead of guessing which agent can do what, an
+agent announces its skills at startup; any other agent can then query,
+discover, or find the best match for a task — all through MCP tools.
+
+### Architecture
+
+The registry lives in `src/a2a_mcp_bridge/registry/` with five modules:
+
+- **`models.py`** — Pydantic models (`AgentInfo`, `Capability`, `CostModel`)
+  that define the schema for registered agents and their skills.
+- **`storage.py`** — `RegistryStorage`: SQLite persistence layer. Creates a
+  `registry.db` co-located with the main bus database; tables are `agents`
+  and `capabilities` with JSON-serialised capability payloads.
+- **`manager.py`** — `CapabilityRegistry`: main in-memory cache + write-through
+  to SQLite. Handles `announce()` (register/update) and `query()` (keyword +
+  cost filtering).
+- **`query.py`** — `RegistryQuery`: higher-level discovery helpers.
+  `discover_all()` flattens every capability across every agent into a
+  clean dict list; `find_best()` scores matches (keyword hit → 1.0, cost
+  penalty → 0.5) and sorts by score descending, then cost ascending.
+- **`heartbeat.py`** — `HeartbeatManager`: async background loop that tracks
+  agent liveness. Agents call `capability_ping()` to signal they are still
+  alive; if no heartbeat is received within **2× the interval** (default 60 s),
+  the agent is marked `offline` and persisted to DB.
+
+### MCP tools
+
+Five new tools are registered alongside the core six:
+
+- **`capability_announce(payload)`** — Register or update an agent's
+  capabilities. `payload` is a JSON string matching the `AgentInfo` model.
+  Returns `{"status": "ok", "registered": <count>}`.
+- **`capability_query(keyword="", max_cost=None)`** — Filter online agents by
+  keyword (matches `skill_id`, `description`, `domain`) and/or a monetary
+  cost ceiling. Returns a list of matching `AgentInfo` objects with enriched
+  fields (`max_context_tokens`, `version`, `agent_name`, `description`).
+- **`capability_discover()`** — List *every* capability across all registered
+  agents in a flat format suitable for A2A/MCP consumption. Response includes
+  a timestamp and `total_agents` count.
+- **`capability_find_best(skill, max_cost=None)`** — Scored search for the
+  best agent for a given skill keyword. Results are sorted by score
+  (descending) then token cost (ascending).
+- **`capability_ping(agent_id)`** — Heartbeat ping. Signals that the agent is
+  still alive. The `HeartbeatManager` marks agents as `offline` if no ping
+  arrives within twice the heartbeat interval.
+
+### Pydantic models
+
+- **`CostModel`** — `tokens_per_call` (float), `latency_ms` (int),
+  `monetary_cost_usd` (optional float), `type` (literal:
+  `"local"` | `"api"` | `"hybrid"`).
+- **`Capability`** — `skill_id`, `description`, `domain`,
+  `parameters_schema`, `return_schema`, `cost` (CostModel),
+  `supports_streaming`, `max_context_tokens`, `permissions`, `version`.
+- **`AgentInfo`** — `agent_id`, `name`, `capabilities` (list of Capability),
+  `status` (`"online"` | `"offline"` | `"degraded"`), `last_heartbeat`,
+  `metadata`.
+
+### Heartbeat mechanism
+
+The `HeartbeatManager` runs an async background loop (default interval:
+30 seconds). On each tick it checks which agents have not sent a
+`capability_ping()` within **2× the interval** (60 s by default). Stale
+agents are marked `offline` and the status change is persisted to SQLite.
+The manager is wired into the MCP server lifecycle (`on_startup` /
+`on_shutdown`), so it starts and stops automatically with the bridge.
+
+### SQLite persistence
+
+Registry data is stored in `registry.db`, co-located with the main
+`a2a-bus.sqlite` database. Two tables are created automatically:
+
+- **`agents`** — `agent_id` (PK), `name`, `status`, `last_heartbeat`,
+  `metadata` (JSON).
+- **`capabilities`** — `id` (auto-increment PK), `agent_id` (FK → agents),
+  `skill_id`, `capability_json` (full serialised `Capability` model).
+
+On startup, the `CapabilityRegistry` warms its in-memory cache from
+`registry.db`, so registrations survive restarts.
+
+### Quick usage example
+
+```python
+# 1. Announce an agent with two capabilities
+capability_announce(payload=json.dumps({
+    "agent_id": "research-agent",
+    "name": "Research Agent",
+    "capabilities": [
+        {
+            "skill_id": "web-search",
+            "description": "Search the web and summarise results",
+            "domain": "research",
+            "cost": {"tokens_per_call": 500, "latency_ms": 2000, "type": "api"}
+        },
+        {
+            "skill_id": "pdf-summarise",
+            "description": "Summarise PDF documents",
+            "domain": "research",
+            "cost": {"tokens_per_call": 1000, "latency_ms": 3000, "type": "local"}
+        }
+    ]
+}))
+# → {"status": "ok", "registered": 2}
+
+# 2. Query by keyword
+capability_query(keyword="search")
+# → [AgentInfo for research-agent, ...]
+
+# 3. Discover everything on the bus
+capability_discover()
+# → {"status": "success", "capabilities": [...], "total_agents": 1, ...}
+```
+
 ## Roadmap
 
 Shipped so far:
@@ -903,6 +1042,12 @@ Planned:
   can participate. Optional Bearer token auth, Pydantic validation,
   async subscribe, webhook wake-up forwarding.
   See [ADR-006.1](docs/adr/ADR-006.1-http-bus-facade.md).
+- **v0.8.0** — Capability Registry. Five new MCP tools
+  (`capability_announce`, `capability_query`, `capability_discover`,
+  `capability_find_best`, `capability_ping`) for centralized discovery of
+  Hermes agent capabilities. Pydantic models (`AgentInfo`, `Capability`,
+  `CostModel`), SQLite-backed persistence (`registry.db`), async heartbeat
+  monitor with stale-agent cleanup.
 
 Planned:
 
