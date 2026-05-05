@@ -585,7 +585,10 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
         Args:
             payload: JSON string matching the AgentInfo schema.
         """
-        agent = AgentInfo.model_validate_json(payload)
+        try:
+            agent = AgentInfo.model_validate_json(payload)
+        except Exception as exc:
+            return {"status": "error", "message": str(exc)}
         cap_registry.announce(agent)
         return {"status": "ok", "registered": len(agent.capabilities)}
 
