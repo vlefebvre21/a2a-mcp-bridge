@@ -29,6 +29,8 @@ from .tools import (
     tool_agent_send_file,
     tool_agent_subscribe,
 )
+from .registry.manager import CapabilityRegistry
+from .registry.models import AgentInfo
 from .validation import validate_tool_params
 from .wake import WebhookWaker, load_registry
 
@@ -248,6 +250,10 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
         # below call _load_waker_if_stale() directly to pick up hot reloads.
         _load_waker_if_stale()
     store.upsert_agent(agent_id)
+
+    # Capability Registry — SQLite-backed, co-located with main DB
+    registry_db_path = str(Path(db_path).with_name("registry.db"))
+    cap_registry = CapabilityRegistry(registry_db_path)
 
     mcp = A2AMcp("a2a-mcp-bridge")
 
@@ -546,6 +552,41 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
             params={"transfer_id": transfer_id},
         )
         return tool_agent_delete_file(store, agent_id, transfer_id)
+
+    # ── Capability Registry tools ──────────────────────────────────────
+
+    @mcp.tool()
+    def capability_announce(payload: str) -> dict[str, Any]:
+        """Register or update an agent's capabilities in the registry.
+
+        Args:
+            payload: JSON string matching the AgentInfo schema.
+        """
+        agent = AgentInfo.model_validate_json(payload)
+        cap_registry.announce(agent)
+        return {"status": "ok", "registered": len(agent.capabilities)}
+
+    @mcp.tool()
+    def capability_query(keyword: str = "", max_cost: float | None = None) -> dict[str, Any]:
+        """Query agents by keyword and/or cost ceiling.
+
+        Args:
+            keyword: Match against skill_id, description, or domain.
+            max_cost: Maximum monetary cost (USD) per call filter.
+        """
+        agents = cap_registry.query(keyword=keyword, max_cost=max_cost)
+        return {
+            "agents": [
+                {
+                    "agent_id": a.agent_id,
+                    "name": a.name,
+                    "status": a.status,
+                    "capabilities": [c.skill_id for c in a.capabilities],
+                }
+                for a in agents
+            ],
+            "count": len(agents),
+        }
 
     return mcp
 
