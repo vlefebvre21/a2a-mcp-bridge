@@ -26,7 +26,20 @@ logger = logging.getLogger("a2a_mcp_bridge.tools")
 
 # Default timeout for outbound HTTP calls (upload/download façade).
 # Overridable via A2A_NETWORK_TIMEOUT env var (seconds).
-_NETWORK_TIMEOUT: float = 30.0
+def _get_network_timeout() -> float:
+    """Return the configured network timeout in seconds."""
+    import os
+    env = os.environ.get("A2A_NETWORK_TIMEOUT", "").strip()
+    if env:
+        try:
+            val = float(env)
+            if val > 0:
+                return val
+        except ValueError:
+            pass
+    return 30.0
+
+_NETWORK_TIMEOUT: float = _get_network_timeout()
 
 # Default long-poll cap for agent_subscribe — keep below typical MCP client
 # timeouts (60 s) so we always answer cleanly.
