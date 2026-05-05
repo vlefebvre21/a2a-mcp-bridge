@@ -276,7 +276,8 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
     registry_db_path = str(Path(db_path).with_name("registry.db"))
     cap_registry = CapabilityRegistry(registry_db_path)
     cap_query = RegistryQuery(cap_registry)
-    heartbeat = HeartbeatManager(cap_registry, interval_seconds=30)
+    heartbeat_interval = int(os.environ.get("A2A_HEARTBEAT_INTERVAL", "30"))
+    heartbeat = HeartbeatManager(cap_registry, interval_seconds=heartbeat_interval)
 
     mcp = A2AMcp("a2a-mcp-bridge")
 
