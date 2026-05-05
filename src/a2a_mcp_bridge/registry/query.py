@@ -30,7 +30,9 @@ class RegistryQuery:
                         "domain": cap.domain,
                         "cost": cap.cost.model_dump(),
                         "supports_streaming": cap.supports_streaming,
+                        "max_context_tokens": cap.max_context_tokens,
                         "permissions": cap.permissions,
+                        "version": cap.version,
                     }
                 )
         return result
@@ -61,9 +63,11 @@ class RegistryQuery:
                     matches.append(
                         {
                             "agent_id": agent.agent_id,
+                            "agent_name": agent.name,
                             "skill_id": cap.skill_id,
                             "score": score,
                             "cost_tokens": cap.cost.tokens_per_call,
+                            "description": cap.description,
                         }
                     )
 
