@@ -297,19 +297,9 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
         webhook registry, fires an HMAC-signed wake-up POST to the recipient's
         local gateway endpoint. SKIPPED for ``intent=fyi`` (ADR-002).
         """
-        # Enforce message body size limit before processing.
-        max_bytes = int(os.environ.get("A2A_MAX_MESSAGE_BYTES", str(1 * 1024 * 1024)))
-        body_bytes = len(message.encode("utf-8"))
-        if body_bytes > max_bytes:
-            from .exceptions import MessageTooLargeError
-            raise MessageTooLargeError(
-                f"Incoming message is {body_bytes} bytes, "
-                f"limit is {max_bytes} bytes "
-                f"(configure with A2A_MAX_MESSAGE_BYTES)"
-            )
         validate_tool_params(
             tool="agent_send",
-            params={"target": target, "metadata": metadata, "intent": intent},
+            params={"target": target, "message": message, "metadata": metadata, "intent": intent},
         )
         return tool_agent_send(
             store, agent_id, target, message, metadata, signal_dir, _load_waker_if_stale(),
