@@ -264,7 +264,7 @@ def create_app(
     store = Store(db_path, signal_dir=signal_dir, check_same_thread=False)
     try:
         store.init_schema()
-    except Exception:
+    except sqlite3.Error:
         store.close()
         raise
     xfer_store = TransferStore(str(Path(db_path).parent / "transfers.db"), check_same_thread=False)
