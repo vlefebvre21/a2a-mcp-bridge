@@ -593,12 +593,15 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
     @mcp.tool()
     def capability_discover() -> dict[str, Any]:
         """List all available capabilities across all registered agents."""
+        from datetime import datetime
+
         capabilities = cap_query.discover_all()
         return {
             "status": "success",
             "type": "capability_discovery",
             "capabilities": capabilities,
             "total_agents": len({c["agent_id"] for c in capabilities}),
+            "timestamp": datetime.utcnow().isoformat(),
         }
 
     @mcp.tool()
