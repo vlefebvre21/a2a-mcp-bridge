@@ -9,6 +9,10 @@ import time
 from pathlib import Path
 from typing import Any
 
+# Default timeout for all outbound HTTP calls (upload/download, webhook, façade).
+# Overridable via A2A_NETWORK_TIMEOUT env var (seconds).
+_NETWORK_TIMEOUT: float = 30.0
+
 from .bus_store import BusStore, HttpBusStore
 from .intents import DEFAULT_INTENT, normalize_intent, wakes
 from .logging_ext import hash_body, log_event
@@ -389,7 +393,7 @@ def _facade_upload(
     )
 
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=_NETWORK_TIMEOUT) as resp:
             result: dict[str, Any] = _json.loads(resp.read())
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode(errors="replace")
@@ -489,7 +493,7 @@ def _facade_download(
     )
 
     try:
-        resp = urllib.request.urlopen(req)
+        resp = urllib.request.urlopen(req, timeout=_NETWORK_TIMEOUT)
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             raise FileNotFoundError(f"transfer not found: {url}") from exc
