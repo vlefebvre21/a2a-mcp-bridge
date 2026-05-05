@@ -1048,7 +1048,7 @@ def test_facade_download_sends_x_agent_id_header(tmp_path: Path) -> None:
 
     captured: dict = {}
 
-    def _fake_urlopen(req):
+    def _fake_urlopen(req, timeout=None):
         captured["headers"] = dict(req.headers)
         return resp
 
@@ -1089,7 +1089,7 @@ def test_facade_download_omits_x_agent_id_when_empty(tmp_path: Path) -> None:
 
     captured: dict = {}
 
-    def _fake_urlopen(req):
+    def _fake_urlopen(req, timeout=None):
         captured["headers"] = dict(req.headers)
         return resp
 

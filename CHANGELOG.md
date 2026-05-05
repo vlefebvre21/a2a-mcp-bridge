@@ -6,6 +6,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.7] — 2026-05-05
+
+### Added
+
+- **MCP message validation layer** (`src/a2a_mcp_bridge/validation.py`).
+  - `validate_mcp_envelope()` parses and validates raw JSON-RPC envelopes:
+    rejects malformed JSON, non-object payloads, missing `jsonrpc`/`method`/`id`
+    fields, and wrong JSON-RPC version.
+  - `validate_tool_params()` dispatches per-tool parameter validation for
+    `agent_send`, `agent_send_file`, `agent_subscribe`, `agent_fetch_file`,
+    `agent_delete_file`.
+  - Incoming-message size limit (default 1 MB, configurable via
+    `A2A_MAX_MESSAGE_BYTES`) raises `MessageTooLargeError`.
+- **Typed exception hierarchy** (`src/a2a_mcp_bridge/exceptions.py`):
+  `A2ABridgeError` → `MCPConnectionError`, `MCPValidationError` (→
+  `MessageTooLargeError`, `MCPProtocolError`), `MCPConfigError`. Replaces
+  previous `except Exception` sites with specific types.
+- **Network-call timeouts** on outbound HTTP façade upload/download
+  (`tools.py`). Default 30 s, overridable via `A2A_NETWORK_TIMEOUT`.
+- **45 new tests** across `tests/test_basic.py` and `tests/test_server.py`:
+  parsers (`_parse_message`, `_parse_agent_record`, `_parse_content_disposition`),
+  intent normalization, agent-id validation, envelope/tool-param validation,
+  exception hierarchy, and 5 MCP-wrapper integration tests that exercise
+  `validate_tool_params` through `build_server()._tool_manager` (regression
+  guard: a refactor dropping the validation call from a wrapper would fail
+  these tests). Full suite: **396/396 passing**, coverage 86.33% (gate 85%).
+
+### Fixed
+
+- `agent_send` dispatcher now forwards `message` into `validate_tool_params`
+  (was silently dropped, leaving the 65 536-byte body limit inert).
+- `_NETWORK_TIMEOUT` now actually reads `A2A_NETWORK_TIMEOUT`; the prior
+  comment advertised the env var but the code ignored it.
+
 ## [0.7.6] — 2026-05-04
 
 ### Fixed

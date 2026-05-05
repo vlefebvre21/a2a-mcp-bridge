@@ -224,8 +224,10 @@ class HttpBusStore:
         try:
             resp = self._client.post(self._url("/register"), json=payload)
             resp.raise_for_status()
-        except Exception as exc:
+        except self._httpx.HTTPError as exc:
             log.warning("upsert_agent failed (best-effort): %s", exc)
+        except Exception as exc:
+            log.warning("upsert_agent failed (unexpected): %s", exc)
 
     # -- messaging ---------------------------------------------------------
 

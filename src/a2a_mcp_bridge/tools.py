@@ -24,6 +24,23 @@ from .wake import WebhookWaker
 
 logger = logging.getLogger("a2a_mcp_bridge.tools")
 
+# Default timeout for outbound HTTP calls (upload/download façade).
+# Overridable via A2A_NETWORK_TIMEOUT env var (seconds).
+def _get_network_timeout() -> float:
+    """Return the configured network timeout in seconds."""
+    import os
+    env = os.environ.get("A2A_NETWORK_TIMEOUT", "").strip()
+    if env:
+        try:
+            val = float(env)
+            if val > 0:
+                return val
+        except ValueError:
+            pass
+    return 30.0
+
+_NETWORK_TIMEOUT: float = _get_network_timeout()
+
 # Default long-poll cap for agent_subscribe — keep below typical MCP client
 # timeouts (60 s) so we always answer cleanly.
 MAX_SUBSCRIBE_TIMEOUT_SECONDS: float = 55.0
@@ -389,7 +406,7 @@ def _facade_upload(
     )
 
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=_NETWORK_TIMEOUT) as resp:
             result: dict[str, Any] = _json.loads(resp.read())
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode(errors="replace")
@@ -489,7 +506,7 @@ def _facade_download(
     )
 
     try:
-        resp = urllib.request.urlopen(req)
+        resp = urllib.request.urlopen(req, timeout=_NETWORK_TIMEOUT)
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             raise FileNotFoundError(f"transfer not found: {url}") from exc

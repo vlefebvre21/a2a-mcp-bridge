@@ -168,3 +168,83 @@ def test_build_server_registers_agent_ping_tool(tmp_path: Path) -> None:
     assert "agent_ping" in names
     # Sanity: the v0.1-v0.3 tools are still there
     assert {"agent_send", "agent_inbox", "agent_list", "agent_subscribe"} <= names
+
+
+# ---------------------------------------------------------------------------
+# v0.8 — MCP wrapper must wire validate_tool_params
+#
+# Regression guard: prior to v0.8, validate_tool_params() was tested in
+# isolation only (see tests/test_basic.py). Nothing asserted that the
+# MCP wrappers built by build_server() actually invoke it. A refactor
+# that dropped the validate_tool_params() call from a wrapper would
+# leave every unit test green while silently disabling input validation.
+#
+# These tests exercise the full dispatch path via _tool_manager._tools[name].fn
+# and would fail if the validate_tool_params() call were removed from the
+# corresponding wrapper in build_server().
+# ---------------------------------------------------------------------------
+
+
+def _get_tool_fn(mcp: Any, name: str) -> Any:
+    """Return the Python callable registered under ``name`` in the FastMCP tool manager."""
+    return mcp._tool_manager._tools[name].fn
+
+
+def test_agent_send_wrapper_rejects_oversize_message(tmp_path: Path) -> None:
+    """build_server().agent_send must call validate_tool_params (65536-byte limit)."""
+    from a2a_mcp_bridge.exceptions import MCPValidationError
+
+    db = tmp_path / "bus.sqlite"
+    mcp = server_module.build_server(agent_id="alice", db_path=str(db))
+    agent_send = _get_tool_fn(mcp, "agent_send")
+
+    with pytest.raises(MCPValidationError, match="65536"):
+        agent_send(target="bob", message="x" * 65537)
+
+
+def test_agent_send_wrapper_rejects_bad_target(tmp_path: Path) -> None:
+    """build_server().agent_send must reject invalid agent_id before hitting the store."""
+    from a2a_mcp_bridge.exceptions import MCPValidationError
+
+    db = tmp_path / "bus.sqlite"
+    mcp = server_module.build_server(agent_id="alice", db_path=str(db))
+    agent_send = _get_tool_fn(mcp, "agent_send")
+
+    with pytest.raises(MCPValidationError, match="target"):
+        agent_send(target="BAD ID!", message="hi")
+
+
+def test_agent_fetch_file_wrapper_rejects_empty_transfer_id(tmp_path: Path) -> None:
+    """build_server().agent_fetch_file must call validate_tool_params."""
+    from a2a_mcp_bridge.exceptions import MCPValidationError
+
+    db = tmp_path / "bus.sqlite"
+    mcp = server_module.build_server(agent_id="alice", db_path=str(db))
+    agent_fetch_file = _get_tool_fn(mcp, "agent_fetch_file")
+
+    with pytest.raises(MCPValidationError, match="transfer_id"):
+        agent_fetch_file(transfer_id="")
+
+
+def test_agent_delete_file_wrapper_rejects_empty_transfer_id(tmp_path: Path) -> None:
+    """build_server().agent_delete_file must call validate_tool_params."""
+    from a2a_mcp_bridge.exceptions import MCPValidationError
+
+    db = tmp_path / "bus.sqlite"
+    mcp = server_module.build_server(agent_id="alice", db_path=str(db))
+    agent_delete_file = _get_tool_fn(mcp, "agent_delete_file")
+
+    with pytest.raises(MCPValidationError, match="transfer_id"):
+        agent_delete_file(transfer_id="")
+
+
+def test_agent_send_file_wrapper_rejects_missing_file_path(tmp_path: Path) -> None:
+    """build_server().agent_send_file must call validate_tool_params."""
+    from a2a_mcp_bridge.exceptions import MCPValidationError
+
+    db = tmp_path / "bus.sqlite"
+    mcp = server_module.build_server(agent_id="alice", db_path=str(db))
+    agent_send_file = _get_tool_fn(mcp, "agent_send_file")
+
+    with pytest.raises(MCPValidationError, match="file_path"):
+        agent_send_file(target="bob", file_path="")
