@@ -189,9 +189,11 @@ class TestValidateMCPEnvelope:
             validate_mcp_envelope('{"jsonrpc": "1.0", "method": "test", "id": 1}')
 
     def test_message_too_large(self) -> None:
-        with patch("a2a_mcp_bridge.validation._max_message_bytes", return_value=10):
-            with pytest.raises(MessageTooLargeError):
-                validate_mcp_envelope("x" * 100)
+        with (
+            patch("a2a_mcp_bridge.validation._max_message_bytes", return_value=10),
+            pytest.raises(MessageTooLargeError),
+        ):
+            validate_mcp_envelope("x" * 100)
 
 
 class TestValidateToolParams:
