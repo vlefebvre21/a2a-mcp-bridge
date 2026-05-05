@@ -541,7 +541,7 @@ def wake_registry_init(
 
 # ── Capability Registry commands ────────────────────────────────────
 
-DEFAULT_REGISTRY_DB = "~/.a2a-registry.db"
+DEFAULT_REGISTRY_DB = "~/.a2a-bus.registry.db"
 
 
 @registry_app.command("discover")

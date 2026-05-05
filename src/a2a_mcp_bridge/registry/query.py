@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any
 
 from .manager import CapabilityRegistry
-from .models import AgentInfo
 
 
 class RegistryQuery:
@@ -16,9 +15,9 @@ class RegistryQuery:
 
     # ── discovery ──────────────────────────────────────────────────────
 
-    def discover_all(self) -> List[Dict[str, Any]]:
+    def discover_all(self) -> list[dict[str, Any]]:
         """Return all available capabilities in a clean format for A2A/MCP."""
-        result: List[Dict[str, Any]] = []
+        result: list[dict[str, Any]] = []
         for agent in self.registry.get_all_agents():
             for cap in agent.capabilities:
                 result.append(
@@ -43,7 +42,7 @@ class RegistryQuery:
         self,
         skill_keyword: str,
         max_cost: float | None = None,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Find best matching agents for a skill (simple scoring for now).
 
         Score heuristics:
@@ -51,7 +50,7 @@ class RegistryQuery:
           - penalty 0.5 if max_cost is set and token cost exceeds it
           - sorted descending by score, then ascending by token cost
         """
-        matches: List[Dict[str, Any]] = []
+        matches: list[dict[str, Any]] = []
         kw = skill_keyword.lower()
 
         for agent in self.registry.get_all_agents():

@@ -618,6 +618,7 @@ a2a-mcp-bridge register --all --hermes-profiles ~/.hermes/profiles
 | `A2A_TRANSFER_MAX_TTL_SECONDS` | `604800` | Hard cap on any transfer TTL (7 d). |
 | `A2A_TRANSFER_MAX_SIZE_BYTES` | `104857600` | Max file size per transfer (100 MB). |
 | `A2A_TRANSFER_MAX_PENDING_PER_AGENT` | `50` | Max un-expired transfers a single sender may have open. |
+| `A2A_HEARTBEAT_INTERVAL` | `30` | Heartbeat check interval in seconds. Agents not seen for 2x this value are marked offline. |
 
 ## HTTP Facade (Remote Mode)
 

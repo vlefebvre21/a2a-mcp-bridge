@@ -17,6 +17,10 @@ from mcp.server.lowlevel import NotificationOptions
 from mcp.server.stdio import stdio_server
 
 from .bus_store import BusStore
+from .registry.heartbeat import HeartbeatManager
+from .registry.manager import CapabilityRegistry
+from .registry.models import AgentInfo
+from .registry.query import RegistryQuery
 from .signals import SignalDir
 from .store import Store
 from .tools import (
@@ -29,10 +33,6 @@ from .tools import (
     tool_agent_send_file,
     tool_agent_subscribe,
 )
-from .registry.heartbeat import HeartbeatManager
-from .registry.manager import CapabilityRegistry
-from .registry.models import AgentInfo
-from .registry.query import RegistryQuery
 from .validation import validate_tool_params
 from .wake import WebhookWaker, load_registry
 
@@ -273,7 +273,7 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
     store.upsert_agent(agent_id)
 
     # Capability Registry — SQLite-backed, co-located with main DB
-    registry_db_path = str(Path(db_path).with_name("registry.db"))
+    registry_db_path = str(Path(db_path).with_suffix(".registry.db"))
     cap_registry = CapabilityRegistry(registry_db_path)
     cap_query = RegistryQuery(cap_registry)
     heartbeat_interval = int(os.environ.get("A2A_HEARTBEAT_INTERVAL", "30"))

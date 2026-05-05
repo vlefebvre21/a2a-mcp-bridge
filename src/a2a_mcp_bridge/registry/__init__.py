@@ -6,10 +6,10 @@ from .models import AgentInfo, Capability, CostModel
 from .query import RegistryQuery
 
 __all__ = [
-    "CapabilityRegistry",
-    "HeartbeatManager",
     "AgentInfo",
     "Capability",
+    "CapabilityRegistry",
     "CostModel",
+    "HeartbeatManager",
     "RegistryQuery",
 ]

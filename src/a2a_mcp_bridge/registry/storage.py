@@ -6,7 +6,6 @@ import json
 import sqlite3
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
 
 from .models import AgentInfo, Capability
 
@@ -75,14 +74,14 @@ class RegistryStorage:
 
     # ── read ───────────────────────────────────────────────────────────
 
-    def get_all_agents(self) -> List[AgentInfo]:
+    def get_all_agents(self) -> list[AgentInfo]:
         """Load all agents with their capabilities."""
         conn = sqlite3.connect(str(self.db_path))
-        agents: List[AgentInfo] = []
+        agents: list[AgentInfo] = []
 
         for row in conn.execute("SELECT * FROM agents"):
             agent_id, name, status, heartbeat_str, metadata_json = row
-            capabilities: List[Capability] = []
+            capabilities: list[Capability] = []
             for cap_row in conn.execute(
                 "SELECT capability_json FROM capabilities WHERE agent_id = ?",
                 (agent_id,),
@@ -103,7 +102,7 @@ class RegistryStorage:
         conn.close()
         return agents
 
-    def get_agent(self, agent_id: str) -> Optional[AgentInfo]:
+    def get_agent(self, agent_id: str) -> AgentInfo | None:
         """Load a single agent by ID (or None if not found)."""
         for agent in self.get_all_agents():
             if agent.agent_id == agent_id:

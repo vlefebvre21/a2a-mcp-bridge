@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from datetime import datetime
-from typing import Dict
 
 from .manager import CapabilityRegistry
 
@@ -19,7 +19,7 @@ class HeartbeatManager:
     def __init__(self, registry: CapabilityRegistry, interval_seconds: int = 30) -> None:
         self.registry = registry
         self.interval = interval_seconds
-        self._last_heartbeat: Dict[str, float] = {}
+        self._last_heartbeat: dict[str, float] = {}
         self._running = False
         self._task: asyncio.Task | None = None
 
@@ -38,10 +38,8 @@ class HeartbeatManager:
         self._running = False
         if self._task is not None:
             self._task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._task
-            except asyncio.CancelledError:
-                pass
             self._task = None
         logger.info("Heartbeat monitor stopped")
 
@@ -67,7 +65,7 @@ class HeartbeatManager:
                 await asyncio.sleep(5)
 
     def _cleanup_stale_agents(self) -> None:
-        """Mark agents as offline if no heartbeat for > 2×interval."""
+        """Mark agents as offline if no heartbeat for > 2x interval."""
         now = time.time()
         threshold = now - (self.interval * 2)
 

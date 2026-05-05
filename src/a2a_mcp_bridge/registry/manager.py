@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Optional
 
 from .models import AgentInfo
 from .storage import RegistryStorage
@@ -16,7 +15,7 @@ class CapabilityRegistry:
 
     def __init__(self, db_path: str = "registry.db") -> None:
         self.storage = RegistryStorage(db_path)
-        self._cache: Dict[str, AgentInfo] = {}
+        self._cache: dict[str, AgentInfo] = {}
         # Warm cache from persistent storage
         for agent in self.storage.get_all_agents():
             self._cache[agent.agent_id] = agent
@@ -35,7 +34,7 @@ class CapabilityRegistry:
 
     # ── read ───────────────────────────────────────────────────────────
 
-    def query(self, keyword: str = "", max_cost: float | None = None) -> List[AgentInfo]:
+    def query(self, keyword: str = "", max_cost: float | None = None) -> list[AgentInfo]:
         """Query agents by keyword or cost ceiling.
 
         For now this is a simple filter — can be enhanced with scoring later.
@@ -72,10 +71,10 @@ class CapabilityRegistry:
 
         return agents
 
-    def get_agent(self, agent_id: str) -> Optional[AgentInfo]:
+    def get_agent(self, agent_id: str) -> AgentInfo | None:
         """Return cached agent info (or None)."""
         return self._cache.get(agent_id)
 
-    def get_all_agents(self) -> List[AgentInfo]:
+    def get_all_agents(self) -> list[AgentInfo]:
         """Return all cached agents."""
         return list(self._cache.values())
