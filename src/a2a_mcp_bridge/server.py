@@ -29,6 +29,7 @@ from .tools import (
     tool_agent_send_file,
     tool_agent_subscribe,
 )
+from .registry.heartbeat import HeartbeatManager
 from .registry.manager import CapabilityRegistry
 from .registry.models import AgentInfo
 from .registry.query import RegistryQuery
@@ -222,16 +223,35 @@ class A2AMcp(FastMCP):
         which this override can be deleted.
     """
 
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._on_startup: list[Any] = []
+        self._on_shutdown: list[Any] = []
+
+    def on_startup(self, fn: Any) -> None:
+        """Register an async callable to run when the server starts."""
+        self._on_startup.append(fn)
+
+    def on_shutdown(self, fn: Any) -> None:
+        """Register an async callable to run when the server stops."""
+        self._on_shutdown.append(fn)
+
     async def run_stdio_async(self) -> None:
         # Kept in sync with FastMCP.run_stdio_async (mcp>=1.0,<2). See class docstring.
-        async with stdio_server() as (read_stream, write_stream):
-            await self._mcp_server.run(
-                read_stream,
-                write_stream,
-                self._mcp_server.create_initialization_options(
-                    notification_options=NotificationOptions(tools_changed=True),
-                ),
-            )
+        for fn in self._on_startup:
+            await fn()
+        try:
+            async with stdio_server() as (read_stream, write_stream):
+                await self._mcp_server.run(
+                    read_stream,
+                    write_stream,
+                    self._mcp_server.create_initialization_options(
+                        notification_options=NotificationOptions(tools_changed=True),
+                    ),
+                )
+        finally:
+            for fn in self._on_shutdown:
+                await fn()
 
 
 def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None, bus_url: str | None = None, bus_api_key: str | None = None) -> FastMCP:
@@ -256,6 +276,7 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
     registry_db_path = str(Path(db_path).with_name("registry.db"))
     cap_registry = CapabilityRegistry(registry_db_path)
     cap_query = RegistryQuery(cap_registry)
+    heartbeat = HeartbeatManager(cap_registry, interval_seconds=30)
 
     mcp = A2AMcp("a2a-mcp-bridge")
 
@@ -619,6 +640,21 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
             "results": results,
             "count": len(results),
         }
+
+    @mcp.tool()
+    def capability_ping(agent_id: str) -> dict[str, Any]:
+        """Signal that an agent is still alive (heartbeat ping).
+
+        Args:
+            agent_id: The agent sending the heartbeat.
+        """
+        heartbeat.ping(agent_id)
+        return {"status": "ok", "agent_id": agent_id}
+
+    # ── Lifecycle hooks ────────────────────────────────────────────────
+
+    mcp.on_startup(heartbeat.start)
+    mcp.on_shutdown(heartbeat.stop)
 
     return mcp
 
