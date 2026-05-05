@@ -31,6 +31,7 @@ from .tools import (
 )
 from .registry.manager import CapabilityRegistry
 from .registry.models import AgentInfo
+from .registry.query import RegistryQuery
 from .validation import validate_tool_params
 from .wake import WebhookWaker, load_registry
 
@@ -254,6 +255,7 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
     # Capability Registry — SQLite-backed, co-located with main DB
     registry_db_path = str(Path(db_path).with_name("registry.db"))
     cap_registry = CapabilityRegistry(registry_db_path)
+    cap_query = RegistryQuery(cap_registry)
 
     mcp = A2AMcp("a2a-mcp-bridge")
 
@@ -586,6 +588,33 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
                 for a in agents
             ],
             "count": len(agents),
+        }
+
+    @mcp.tool()
+    def capability_discover() -> dict[str, Any]:
+        """List all available capabilities across all registered agents."""
+        capabilities = cap_query.discover_all()
+        return {
+            "status": "success",
+            "type": "capability_discovery",
+            "capabilities": capabilities,
+            "total_agents": len({c["agent_id"] for c in capabilities}),
+        }
+
+    @mcp.tool()
+    def capability_find_best(skill: str, max_cost: float | None = None) -> dict[str, Any]:
+        """Find the best matching agents for a specific skill keyword.
+
+        Args:
+            skill: Keyword to match against skill_id or description.
+            max_cost: Optional token-cost ceiling for scoring.
+        """
+        results = cap_query.find_best(skill, max_cost=max_cost)
+        return {
+            "status": "success",
+            "query": skill,
+            "results": results,
+            "count": len(results),
         }
 
     return mcp
