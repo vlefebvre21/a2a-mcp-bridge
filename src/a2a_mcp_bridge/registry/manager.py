@@ -75,3 +75,7 @@ class CapabilityRegistry:
     def get_agent(self, agent_id: str) -> Optional[AgentInfo]:
         """Return cached agent info (or None)."""
         return self._cache.get(agent_id)
+
+    def get_all_agents(self) -> List[AgentInfo]:
+        """Return all cached agents."""
+        return list(self._cache.values())
