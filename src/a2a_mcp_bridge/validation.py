@@ -106,6 +106,10 @@ def validate_tool_params(
         _validate_agent_send_file(params)
     elif tool == "agent_subscribe":
         _validate_agent_subscribe(params)
+    elif tool == "agent_fetch_file":
+        _validate_agent_fetch_file(params)
+    elif tool == "agent_delete_file":
+        _validate_agent_delete_file(params)
 
     return params
 
@@ -173,3 +177,25 @@ def _validate_agent_subscribe(params: dict[str, Any]) -> None:
         raise MCPValidationError(
             f"'timeout_seconds' capped at 55 s, got {timeout}"
         )
+
+
+def _validate_agent_fetch_file(params: dict[str, Any]) -> None:
+    """Validate agent_fetch_file parameters."""
+    from .exceptions import MCPValidationError
+
+    transfer_id = params.get("transfer_id")
+    if not isinstance(transfer_id, str) or not transfer_id:
+        raise MCPValidationError("'transfer_id' must be a non-empty string")
+
+    verify = params.get("verify", True)
+    if not isinstance(verify, bool):
+        raise MCPValidationError("'verify' must be a boolean")
+
+
+def _validate_agent_delete_file(params: dict[str, Any]) -> None:
+    """Validate agent_delete_file parameters."""
+    from .exceptions import MCPValidationError
+
+    transfer_id = params.get("transfer_id")
+    if not isinstance(transfer_id, str) or not transfer_id:
+        raise MCPValidationError("'transfer_id' must be a non-empty string")
