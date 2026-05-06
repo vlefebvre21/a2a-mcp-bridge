@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -39,5 +39,5 @@ class AgentInfo(BaseModel):
     name: str
     capabilities: list[Capability] = Field(default_factory=list)
     status: Literal["online", "offline", "degraded"] = "online"
-    last_heartbeat: datetime = Field(default_factory=datetime.utcnow)
+    last_heartbeat: datetime = Field(default_factory=lambda: datetime.now(UTC))
     metadata: dict[str, Any] = Field(default_factory=dict)

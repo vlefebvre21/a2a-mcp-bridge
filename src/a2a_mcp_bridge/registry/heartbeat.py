@@ -6,7 +6,7 @@ import asyncio
 import contextlib
 import logging
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 
 from .manager import CapabilityRegistry
 
@@ -48,7 +48,7 @@ class HeartbeatManager:
     def ping(self, agent_id: str) -> None:
         """Called by agents to signal they are still alive."""
         self._last_heartbeat[agent_id] = time.time()
-        logger.debug("Agent %s pinged at %s", agent_id, datetime.utcnow().isoformat())
+        logger.debug("Agent %s pinged at %s", agent_id, datetime.now(UTC).isoformat())
 
     # ── internal ───────────────────────────────────────────────────────
 

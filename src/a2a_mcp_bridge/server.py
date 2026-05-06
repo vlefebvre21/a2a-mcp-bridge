@@ -586,10 +586,15 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
         Args:
             payload: JSON string matching the AgentInfo schema.
         """
+        from pydantic import ValidationError
+
+        from .exceptions import MCPValidationError
+
+        validate_tool_params(tool="capability_announce", params={"payload": payload})
         try:
             agent = AgentInfo.model_validate_json(payload)
-        except Exception as exc:
-            return {"status": "error", "message": str(exc)}
+        except ValidationError as exc:
+            raise MCPValidationError(f"invalid capability payload: {exc}") from exc
         cap_registry.announce(agent)
         return {"status": "ok", "registered": len(agent.capabilities)}
 
@@ -618,7 +623,7 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
     @mcp.tool()
     def capability_discover() -> dict[str, Any]:
         """List all available capabilities across all registered agents."""
-        from datetime import datetime
+        from datetime import UTC, datetime
 
         capabilities = cap_query.discover_all()
         return {
@@ -626,7 +631,7 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
             "type": "capability_discovery",
             "capabilities": capabilities,
             "total_agents": len({c["agent_id"] for c in capabilities}),
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
         }
 
     @mcp.tool()
