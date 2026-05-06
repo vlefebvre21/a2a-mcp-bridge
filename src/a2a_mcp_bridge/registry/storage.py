@@ -92,7 +92,7 @@ class RegistryStorage:
                 AgentInfo(
                     agent_id=agent_id,
                     name=name,
-                    status=status,  # type: ignore[arg-type]
+                    status=status,
                     last_heartbeat=datetime.fromisoformat(heartbeat_str),
                     metadata=json.loads(metadata_json) if metadata_json else {},
                     capabilities=capabilities,

@@ -21,7 +21,7 @@ class HeartbeatManager:
         self.interval = interval_seconds
         self._last_heartbeat: dict[str, float] = {}
         self._running = False
-        self._task: asyncio.Task | None = None
+        self._task: asyncio.Task[None] | None = None
 
     # ── lifecycle ──────────────────────────────────────────────────────
 

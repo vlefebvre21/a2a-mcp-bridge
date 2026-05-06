@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from datetime import datetime
 
-import pytest
-
 from a2a_mcp_bridge.registry.models import AgentInfo, Capability, CostModel
 
 

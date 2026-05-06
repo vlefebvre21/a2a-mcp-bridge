@@ -73,7 +73,7 @@ def test_discover_all_multiple_agents(query: RegistryQuery):
     query.registry.announce(_make_agent("a2", "Agent 2"))
 
     result = query.discover_all()
-    assert len(result) == 4  # 2 capabilities × 2 agents
+    assert len(result) == 4  # 2 capabilities x 2 agents
 
 
 def test_find_best_matching(query: RegistryQuery):
