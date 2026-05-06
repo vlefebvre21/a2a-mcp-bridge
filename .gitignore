@@ -37,3 +37,5 @@ env/
 .env
 .env.local
 /local/
+transfers.db-shm
+transfers.db-wal
