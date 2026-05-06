@@ -6,6 +6,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-05-06
+
+### Added
+
+- **Capability Registry** — agents advertise the skills they offer via 5 new
+  MCP tools. Bridge maintains a SQLite-backed registry (currently local per
+  bridge — centralisation tracked in a follow-up issue):
+  - `capability_announce(payload)` — register/update an agent's capabilities
+    from an `AgentInfo` JSON payload. Validated through
+    `validate_tool_params("capability_announce", …)`; raises
+    `MCPValidationError` on bad JSON or Pydantic validation failure.
+  - `capability_query(keyword, max_cost)` — filter registered agents by
+    keyword match (skill_id / description / domain) and/or USD cost ceiling.
+  - `capability_discover()` — list every capability across all registered
+    agents, with agent metadata.
+  - `capability_find_best(skill, max_cost)` — scored match against a skill
+    keyword, optional token-cost ceiling.
+  - `capability_ping(agent_id)` — heartbeat, used by `HeartbeatManager` to
+    mark agents offline after `2 × A2A_HEARTBEAT_INTERVAL` of silence.
+- **Registry data model** (`src/a2a_mcp_bridge/registry/models.py`) —
+  Pydantic `AgentInfo`, `Capability`, `CostModel` (tokens, latency, monetary
+  cost, local/api/hybrid type).
+- **Registry storage** (`src/a2a_mcp_bridge/registry/storage.py`) — SQLite
+  schema with `agents` and `capabilities` tables, full CRUD, cache warm-up
+  on startup.
+- **Heartbeat manager** (`src/a2a_mcp_bridge/registry/heartbeat.py`) —
+  async lifecycle task that sweeps stale agents; interval configurable via
+  `A2A_HEARTBEAT_INTERVAL` env var (default 30 s).
+- **Registry CLI sub-commands** — `registry discover`, `registry list-agents`,
+  `registry find-best <skill>` for ops inspection.
+- **Example client** (`examples/hermes_agent_client.py`) — minimal agent
+  announce + heartbeat loop.
+- **37 new tests** covering models, storage, manager, query, heartbeat, plus
+  6 MCP wrapper tests in `test_server.py` (pattern borrowed from v0.7.7:
+  accessed via `_tool_manager._tools[name].fn`, fail if `build_server()`
+  stops wiring a capability_* tool) and 1 concurrency regression test
+  (`test_concurrent_announce_and_query_no_race`).
+  Full suite: **432/432 passing**, coverage **85.41 %** (gate 85 %).
+
+### Changed
+
+- `capability_announce` wrapper now raises `MCPValidationError` on invalid
+  payloads (was returning `{"status": "error", "message": …}`) — aligned
+  with every other MCP tool wrapper shipped in v0.7.7.
+- `validate_tool_params()` now handles the `capability_announce` case with
+  a dedicated `_validate_capability_announce()` helper (rejects empty or
+  non-string payload before JSON parsing).
+- `AgentInfo.last_heartbeat` is now **timezone-aware** (UTC). SQLite
+  round-trip via `datetime.fromisoformat()` preserves the tzinfo.
+
+### Fixed
+
+- **Thread-safety** on `CapabilityRegistry._cache` — guarded by a
+  `threading.RLock` around every mutation (`announce`) and every read
+  (`query`, `get_agent`, `get_all_agents`). Before the lock,
+  `HeartbeatManager._cleanup_stale_agents()` mutating the cache from an
+  async background task while an MCP tool iterated `self._cache.values()`
+  could raise `RuntimeError: dictionary changed size during iteration`.
+  Regression test `test_concurrent_announce_and_query_no_race` reliably
+  reproduced the crash before the fix.
+- **Deprecated `datetime.utcnow()`** replaced with `datetime.now(UTC)` in
+  three sites (`registry/models.py`, `registry/heartbeat.py`,
+  `server.py:capability_discover`). Prevents future CI fails under
+  `-W error::DeprecationWarning` on Python 3.12+.
+- **CI red gates restored to green** — 4 ruff errors (F401 × 3 + RUF003)
+  + 2 mypy `--strict` errors (`unused-ignore` in `registry/storage.py`,
+  missing `Task[None]` in `registry/heartbeat.py`) cleaned up.
+
+### Deferred (tracked as follow-up issues)
+
+- **Rename `max_cost` → `max_cost_usd` / `max_tokens`** — the param name is
+  ambiguous (USD in `manager.query`, tokens in `query.find_best`). Not
+  fixed here because it's API-breaking; handled in a separate PR.
+- **Registry centralisation (Option B)** — fuse `{db}.registry.db` into
+  `a2a-bus.sqlite` so the 10-VPS fleet shares a single capability table.
+  Needs dedicated ADR, schema migration, cross-host ACL reasoning.
+- Minor polish: orphan `examples/hermes_agent_client.py` (README link),
+  `AgentInfo.name` uniqueness, cache TTL hardening,
+  `capability_announce(agent: AgentInfo)` vs `payload: str`.
+
 ## [0.7.7] — 2026-05-05
 
 ### Added
