@@ -248,3 +248,124 @@ def test_agent_send_file_wrapper_rejects_missing_file_path(tmp_path: Path) -> No
 
     with pytest.raises(MCPValidationError, match="file_path"):
         agent_send_file(target="bob", file_path="")
+
+
+# ---------------------------------------------------------------------------
+# Capability Registry wrapper tests (v0.8 — pattern 0.7.7)
+#
+# Regression guard: 28 registry unit tests exercise CapabilityRegistry,
+# RegistryQuery and HeartbeatManager in isolation. Nothing previously
+# asserted that build_server() actually wires the 5 capability_* MCP tools
+# into those components. A refactor that dropped cap_registry.announce(agent)
+# or removed an @mcp.tool() wrapper would leave every unit test green while
+# silently disabling capability registration.
+# ---------------------------------------------------------------------------
+
+
+def _valid_agent_payload(agent_id: str = "alice", skill: str = "code-review") -> str:
+    """Return a minimal valid AgentInfo JSON payload for announce tests."""
+    import json as _json
+
+    return _json.dumps(
+        {
+            "agent_id": agent_id,
+            "name": f"Agent {agent_id}",
+            "status": "online",
+            "capabilities": [
+                {
+                    "skill_id": skill,
+                    "description": f"{skill} capability",
+                    "domain": "software",
+                    "cost": {
+                        "tokens_per_call": 1000,
+                        "latency_ms": 500,
+                        "monetary_cost_usd": 0.01,
+                        "type": "local",
+                    },
+                }
+            ],
+            "metadata": {},
+        }
+    )
+
+
+def test_capability_announce_wrapper_registers_agent(tmp_path: Path) -> None:
+    """build_server().capability_announce must persist the agent via cap_registry."""
+    db = tmp_path / "bus.sqlite"
+    mcp = server_module.build_server(agent_id="alice", db_path=str(db))
+    capability_announce = _get_tool_fn(mcp, "capability_announce")
+
+    result = capability_announce(payload=_valid_agent_payload("alice", "python"))
+
+    assert result == {"status": "ok", "registered": 1}
+
+
+def test_capability_announce_wrapper_rejects_bad_payload(tmp_path: Path) -> None:
+    """capability_announce must return a structured error for invalid JSON."""
+    db = tmp_path / "bus.sqlite"
+    mcp = server_module.build_server(agent_id="alice", db_path=str(db))
+    capability_announce = _get_tool_fn(mcp, "capability_announce")
+
+    result = capability_announce(payload="not-valid-json")
+
+    assert result["status"] == "error"
+    assert "message" in result
+
+
+def test_capability_query_wrapper_returns_matching_agents(tmp_path: Path) -> None:
+    """capability_query must filter registered agents by keyword."""
+    db = tmp_path / "bus.sqlite"
+    mcp = server_module.build_server(agent_id="alice", db_path=str(db))
+    announce = _get_tool_fn(mcp, "capability_announce")
+    query = _get_tool_fn(mcp, "capability_query")
+
+    announce(payload=_valid_agent_payload("alice", "python-review"))
+    announce(payload=_valid_agent_payload("bob", "rust-review"))
+
+    result = query(keyword="python")
+
+    assert result["count"] == 1
+    assert result["agents"][0]["agent_id"] == "alice"
+
+
+def test_capability_discover_wrapper_lists_all_capabilities(tmp_path: Path) -> None:
+    """capability_discover must return all capabilities across registered agents."""
+    db = tmp_path / "bus.sqlite"
+    mcp = server_module.build_server(agent_id="alice", db_path=str(db))
+    announce = _get_tool_fn(mcp, "capability_announce")
+    discover = _get_tool_fn(mcp, "capability_discover")
+
+    announce(payload=_valid_agent_payload("alice", "skill-a"))
+    announce(payload=_valid_agent_payload("bob", "skill-b"))
+
+    result = discover()
+
+    assert result["status"] == "success"
+    assert result["total_agents"] == 2
+    assert len(result["capabilities"]) == 2
+
+
+def test_capability_find_best_wrapper_returns_matches(tmp_path: Path) -> None:
+    """capability_find_best must return scored matches for the skill keyword."""
+    db = tmp_path / "bus.sqlite"
+    mcp = server_module.build_server(agent_id="alice", db_path=str(db))
+    announce = _get_tool_fn(mcp, "capability_announce")
+    find_best = _get_tool_fn(mcp, "capability_find_best")
+
+    announce(payload=_valid_agent_payload("alice", "code-review-python"))
+
+    result = find_best(skill="python")
+
+    assert result["status"] == "success"
+    assert result["count"] == 1
+
+
+def test_capability_ping_wrapper_records_heartbeat(tmp_path: Path) -> None:
+    """capability_ping must delegate to HeartbeatManager.ping."""
+    db = tmp_path / "bus.sqlite"
+    mcp = server_module.build_server(agent_id="alice", db_path=str(db))
+    ping = _get_tool_fn(mcp, "capability_ping")
+
+    result = ping(agent_id="alice")
+
+    assert result == {"status": "ok", "agent_id": "alice"}
