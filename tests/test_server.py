@@ -301,15 +301,27 @@ def test_capability_announce_wrapper_registers_agent(tmp_path: Path) -> None:
 
 
 def test_capability_announce_wrapper_rejects_bad_payload(tmp_path: Path) -> None:
-    """capability_announce must return a structured error for invalid JSON."""
+    """capability_announce must raise MCPValidationError for invalid JSON."""
+    from a2a_mcp_bridge.exceptions import MCPValidationError
+
     db = tmp_path / "bus.sqlite"
     mcp = server_module.build_server(agent_id="alice", db_path=str(db))
     capability_announce = _get_tool_fn(mcp, "capability_announce")
 
-    result = capability_announce(payload="not-valid-json")
+    with pytest.raises(MCPValidationError, match="invalid capability payload"):
+        capability_announce(payload="not-valid-json")
 
-    assert result["status"] == "error"
-    assert "message" in result
+
+def test_capability_announce_wrapper_rejects_empty_payload(tmp_path: Path) -> None:
+    """capability_announce must call validate_tool_params (empty string rejected)."""
+    from a2a_mcp_bridge.exceptions import MCPValidationError
+
+    db = tmp_path / "bus.sqlite"
+    mcp = server_module.build_server(agent_id="alice", db_path=str(db))
+    capability_announce = _get_tool_fn(mcp, "capability_announce")
+
+    with pytest.raises(MCPValidationError, match="payload"):
+        capability_announce(payload="")
 
 
 def test_capability_query_wrapper_returns_matching_agents(tmp_path: Path) -> None:

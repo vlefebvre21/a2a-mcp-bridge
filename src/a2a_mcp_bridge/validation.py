@@ -110,6 +110,8 @@ def validate_tool_params(
         _validate_agent_fetch_file(params)
     elif tool == "agent_delete_file":
         _validate_agent_delete_file(params)
+    elif tool == "capability_announce":
+        _validate_capability_announce(params)
 
     return params
 
@@ -199,3 +201,12 @@ def _validate_agent_delete_file(params: dict[str, Any]) -> None:
     transfer_id = params.get("transfer_id")
     if not isinstance(transfer_id, str) or not transfer_id:
         raise MCPValidationError("'transfer_id' must be a non-empty string")
+
+
+def _validate_capability_announce(params: dict[str, Any]) -> None:
+    """Validate capability_announce parameters (payload must be non-empty string)."""
+    from .exceptions import MCPValidationError
+
+    payload = params.get("payload")
+    if not isinstance(payload, str) or not payload:
+        raise MCPValidationError("'payload' must be a non-empty JSON string")
