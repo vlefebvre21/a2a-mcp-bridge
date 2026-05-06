@@ -95,15 +95,15 @@ def test_query_by_keyword(registry: CapabilityRegistry):
     assert len(results) == 0
 
 
-def test_query_by_max_cost(registry: CapabilityRegistry):
+def test_query_by_max_cost_usd(registry: CapabilityRegistry):
     registry.announce(_make_agent())
 
     # Agent has a capability with monetary_cost_usd=0.002
-    results = registry.query(max_cost=0.005)
+    results = registry.query(max_cost_usd=0.005)
     assert len(results) == 1
 
     # Too low — no match
-    results = registry.query(max_cost=0.001)
+    results = registry.query(max_cost_usd=0.001)
     assert len(results) == 0
 
 

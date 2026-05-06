@@ -98,12 +98,12 @@ def test_find_best_cost_penalty(query: RegistryQuery):
     query.registry.announce(agent)
 
     # Within budget → score 1.0
-    results = query.find_best("expensive", max_cost=10000)
+    results = query.find_best("expensive", max_tokens=10000)
     assert len(results) == 1
     assert results[0]["score"] == 1.0
 
     # Over budget → score 0.5
-    results = query.find_best("expensive", max_cost=100)
+    results = query.find_best("expensive", max_tokens=100)
     assert len(results) == 1
     assert results[0]["score"] == 0.5
 

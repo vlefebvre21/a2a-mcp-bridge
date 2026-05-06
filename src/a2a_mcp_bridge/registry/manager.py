@@ -45,10 +45,12 @@ class CapabilityRegistry:
 
     # ── read ───────────────────────────────────────────────────────────
 
-    def query(self, keyword: str = "", max_cost: float | None = None) -> list[AgentInfo]:
+    def query(self, keyword: str = "", max_cost_usd: float | None = None) -> list[AgentInfo]:
         """Query agents by keyword or cost ceiling.
 
-        For now this is a simple filter — can be enhanced with scoring later.
+        Args:
+            keyword: Match against skill_id, description, or domain.
+            max_cost_usd: Maximum monetary cost in USD per call filter.
         """
         with self._lock:
             agents = list(self._cache.values())
@@ -70,13 +72,13 @@ class CapabilityRegistry:
                 )
             ]
 
-        # Filter by monetary cost ceiling
-        if max_cost is not None:
+        # Filter by monetary cost ceiling (USD)
+        if max_cost_usd is not None:
             agents = [
                 a
                 for a in agents
                 if any(
-                    cap.cost.monetary_cost_usd is not None and cap.cost.monetary_cost_usd <= max_cost
+                    cap.cost.monetary_cost_usd is not None and cap.cost.monetary_cost_usd <= max_cost_usd
                     for cap in a.capabilities
                 )
             ]

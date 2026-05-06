@@ -607,13 +607,13 @@ def registry_list_agents(
 @registry_app.command("find-best")
 def registry_find_best(
     skill: str = typer.Argument(help="Skill keyword to search for."),
-    max_cost: float = typer.Option(None, help="Maximum token cost ceiling."),
+    max_tokens: float = typer.Option(None, "--max-tokens", help="Maximum token cost ceiling."),
     db: str = typer.Option(DEFAULT_REGISTRY_DB, help="Path to registry SQLite database."),
 ) -> None:
     """Find the best matching agents for a skill keyword."""
     registry = CapabilityRegistry(_expand(db))
     query = RegistryQuery(registry)
-    results = query.find_best(skill, max_cost=max_cost)
+    results = query.find_best(skill, max_tokens=max_tokens)
     if not results:
         console.print(f"[yellow]No matching agents for '{skill}'[/yellow]")
         return

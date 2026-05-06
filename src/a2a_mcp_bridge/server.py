@@ -599,14 +599,14 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
         return {"status": "ok", "registered": len(agent.capabilities)}
 
     @mcp.tool()
-    def capability_query(keyword: str = "", max_cost: float | None = None) -> dict[str, Any]:
+    def capability_query(keyword: str = "", max_cost_usd: float | None = None) -> dict[str, Any]:
         """Query agents by keyword and/or cost ceiling.
 
         Args:
             keyword: Match against skill_id, description, or domain.
-            max_cost: Maximum monetary cost (USD) per call filter.
+            max_cost_usd: Maximum monetary cost (USD) per call filter.
         """
-        agents = cap_registry.query(keyword=keyword, max_cost=max_cost)
+        agents = cap_registry.query(keyword=keyword, max_cost_usd=max_cost_usd)
         return {
             "agents": [
                 {
@@ -635,14 +635,14 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
         }
 
     @mcp.tool()
-    def capability_find_best(skill: str, max_cost: float | None = None) -> dict[str, Any]:
+    def capability_find_best(skill: str, max_tokens: float | None = None) -> dict[str, Any]:
         """Find the best matching agents for a specific skill keyword.
 
         Args:
             skill: Keyword to match against skill_id or description.
-            max_cost: Optional token-cost ceiling for scoring.
+            max_tokens: Optional token-cost ceiling for scoring.
         """
-        results = cap_query.find_best(skill, max_cost=max_cost)
+        results = cap_query.find_best(skill, max_tokens=max_tokens)
         return {
             "status": "success",
             "query": skill,

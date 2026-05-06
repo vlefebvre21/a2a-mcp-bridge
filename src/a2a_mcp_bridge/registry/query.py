@@ -41,13 +41,13 @@ class RegistryQuery:
     def find_best(
         self,
         skill_keyword: str,
-        max_cost: float | None = None,
+        max_tokens: float | None = None,
     ) -> list[dict[str, Any]]:
         """Find best matching agents for a skill (simple scoring for now).
 
         Score heuristics:
           - base = 1.0 if keyword matches, 0.0 otherwise
-          - penalty 0.5 if max_cost is set and token cost exceeds it
+          - penalty 0.5 if max_tokens is set and token cost exceeds it
           - sorted descending by score, then ascending by token cost
         """
         matches: list[dict[str, Any]] = []
@@ -57,7 +57,7 @@ class RegistryQuery:
             for cap in agent.capabilities:
                 if kw in cap.skill_id.lower() or kw in cap.description.lower():
                     score = 1.0
-                    if max_cost is not None and cap.cost.tokens_per_call > max_cost:
+                    if max_tokens is not None and cap.cost.tokens_per_call > max_tokens:
                         score = 0.5
                     matches.append(
                         {
