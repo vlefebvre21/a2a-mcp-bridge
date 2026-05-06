@@ -118,3 +118,58 @@ def test_query_filters_offline(registry: CapabilityRegistry):
 
 def test_get_agent_missing(registry: CapabilityRegistry):
     assert registry.get_agent("nonexistent") is None
+
+
+def test_concurrent_announce_and_query_no_race(registry: CapabilityRegistry):
+    """Regression guard: announce() and query() must be safe under concurrency.
+
+    Before the RLock on _cache, ``HeartbeatManager._cleanup_stale_agents``
+    mutating the cache from a background task while an MCP tool was
+    iterating ``self._cache.values()`` could raise
+    ``RuntimeError: dictionary changed size during iteration``.
+
+    This test exercises that pattern directly by hammering announce() and
+    query()/get_all_agents() from multiple threads for a short burst.
+    Any concurrent-mutation bug will raise; a clean run proves the lock
+    serialises access correctly.
+    """
+    import threading as _threading
+
+    errors: list[BaseException] = []
+    stop = _threading.Event()
+
+    def writer() -> None:
+        i = 0
+        while not stop.is_set():
+            try:
+                registry.announce(_make_agent(f"a{i % 50}", f"Agent {i}"))
+                i += 1
+            except BaseException as exc:
+                errors.append(exc)
+                return
+
+    def reader() -> None:
+        while not stop.is_set():
+            try:
+                registry.query(keyword="python")
+                registry.get_all_agents()
+            except BaseException as exc:
+                errors.append(exc)
+                return
+
+    threads = [
+        _threading.Thread(target=writer),
+        _threading.Thread(target=writer),
+        _threading.Thread(target=reader),
+        _threading.Thread(target=reader),
+    ]
+    for t in threads:
+        t.start()
+
+    # Hammer for 200 ms — enough to expose a missing lock.
+    stop.wait(0.2)
+    stop.set()
+    for t in threads:
+        t.join(timeout=2.0)
+
+    assert errors == [], f"concurrent access raised: {errors!r}"

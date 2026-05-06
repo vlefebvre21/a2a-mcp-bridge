@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 
 from .models import AgentInfo
 from .storage import RegistryStorage
@@ -11,11 +12,20 @@ logger = logging.getLogger("a2a_mcp_bridge.registry")
 
 
 class CapabilityRegistry:
-    """Central registry for Hermes agent capabilities."""
+    """Central registry for Hermes agent capabilities.
+
+    Thread-safety: ``_cache`` is protected by an ``RLock``. The lock
+    guards every mutation (``announce``) and every read
+    (``query`` / ``get_agent`` / ``get_all_agents``). This prevents
+    ``RuntimeError: dictionary changed size during iteration`` when
+    :class:`HeartbeatManager._cleanup_stale_agents` mutates the cache
+    from a background task while an MCP tool call is iterating it.
+    """
 
     def __init__(self, db_path: str = "registry.db") -> None:
         self.storage = RegistryStorage(db_path)
         self._cache: dict[str, AgentInfo] = {}
+        self._lock = threading.RLock()
         # Warm cache from persistent storage
         for agent in self.storage.get_all_agents():
             self._cache[agent.agent_id] = agent
@@ -25,7 +35,8 @@ class CapabilityRegistry:
     def announce(self, agent: AgentInfo) -> None:
         """Register a new agent or update its capabilities."""
         self.storage.register_agent(agent)
-        self._cache[agent.agent_id] = agent
+        with self._lock:
+            self._cache[agent.agent_id] = agent
         logger.info(
             "Agent %r registered with %d capabilities",
             agent.name,
@@ -39,7 +50,8 @@ class CapabilityRegistry:
 
         For now this is a simple filter — can be enhanced with scoring later.
         """
-        agents = list(self._cache.values())
+        with self._lock:
+            agents = list(self._cache.values())
 
         # Filter by status
         agents = [a for a in agents if a.status == "online"]
@@ -73,8 +85,10 @@ class CapabilityRegistry:
 
     def get_agent(self, agent_id: str) -> AgentInfo | None:
         """Return cached agent info (or None)."""
-        return self._cache.get(agent_id)
+        with self._lock:
+            return self._cache.get(agent_id)
 
     def get_all_agents(self) -> list[AgentInfo]:
         """Return all cached agents."""
-        return list(self._cache.values())
+        with self._lock:
+            return list(self._cache.values())
