@@ -5,13 +5,9 @@ Covers normal and error cases for all handlers.
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-from typing import Any, Dict, List, Optional
-from unittest.mock import MagicMock, patch
-
 import pytest
-from a2a_mcp_bridge.models import AgentId, Message, SendResult, AgentRecord
+
+from a2a_mcp_bridge.signals import SignalDir
 from a2a_mcp_bridge.store import Store
 from a2a_mcp_bridge.tools import (
     tool_agent_inbox,
@@ -20,8 +16,6 @@ from a2a_mcp_bridge.tools import (
     tool_agent_send,
     tool_agent_subscribe,
 )
-from a2a_mcp_bridge.signals import SignalDir
-from datetime import datetime, UTC
 
 
 # Fixtures
