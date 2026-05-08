@@ -48,6 +48,7 @@ class Store:
         self._conn = sqlite3.connect(
             db_path, isolation_level=None,
             check_same_thread=check_same_thread,
+            timeout=5,
         )
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
@@ -289,19 +290,42 @@ class Store:
             if len(metadata_json.encode("utf-8")) > MAX_METADATA_BYTES:
                 raise ValueError(f"METADATA_TOO_LARGE: metadata exceeds {MAX_METADATA_BYTES} bytes")
 
-        exists = self._conn.execute("SELECT 1 FROM agents WHERE id = ?", (recipient,)).fetchone()
-        if not exists:
-            raise ValueError(f"TARGET_UNKNOWN: {recipient}")
+        # Wrap the recipient check + INSERT in a transaction so a concurrent
+        # DELETE of the recipient between the check and the INSERT is caught
+        # by the FK constraint, preventing silent data corruption.
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            exists = self._conn.execute(
+                "SELECT 1 FROM agents WHERE id = ?", (recipient,)
+            ).fetchone()
+            if not exists:
+                raise ValueError(f"TARGET_UNKNOWN: {recipient}")
 
-        message_id = uuid.uuid4().hex
-        now = datetime.now(UTC)
-        self._conn.execute(
-            """
-            INSERT INTO messages (id, sender_id, recipient_id, body, metadata, created_at, sender_session_id, intent)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (message_id, sender, recipient, body, metadata_json, now.isoformat(), session_id, intent),
-        )
+            message_id = uuid.uuid4().hex
+            now = datetime.now(UTC)
+            self._conn.execute(
+                """
+                INSERT INTO messages (
+                    id, sender_id, recipient_id, body, metadata,
+                    created_at, sender_session_id, intent
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    message_id,
+                    sender,
+                    recipient,
+                    body,
+                    metadata_json,
+                    now.isoformat(),
+                    session_id,
+                    intent,
+                ),
+            )
+            self._conn.execute("COMMIT")
+        except Exception:
+            self._conn.execute("ROLLBACK")
+            raise
         return SendResult(message_id=message_id, sent_at=now, recipient=recipient)
 
     def read_inbox(
@@ -445,6 +469,10 @@ class Store:
         # Fast path: messages already waiting — no SignalDir needed.
         existing = self.read_inbox(agent_id, limit=limit, unread_only=True)
         if existing:
+            # Clear the signal file so a subsequent subscribe() doesn't
+            # fast-path on a stale signal whose messages have been consumed.
+            if self._signal_dir is not None:
+                self._signal_dir.clear(agent_id)
             return existing, False
 
         # Slow path: must block on filesystem signal.
