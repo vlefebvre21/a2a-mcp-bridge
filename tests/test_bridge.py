@@ -31,8 +31,10 @@ def store_with_alice_and_bob(store: Store) -> Store:
 class TestAgentSend:
     def test_send_between_agents_success(self, store_with_alice_and_bob: Store) -> None:
         store = store_with_alice_and_bob
+        # Pass intent=triage explicitly so the assertion doesn't couple to
+        # whatever DEFAULT_INTENT currently is (ADR-002 evolution).
         result = tool_agent_send(
-            store, "alice", "bob", "Hello Bob!", None, None, None, intent=None
+            store, "alice", "bob", "Hello Bob!", None, None, None, intent="triage"
         )
         assert "message_id" in result
         assert result["recipient"] == "bob"
