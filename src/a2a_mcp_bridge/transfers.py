@@ -73,15 +73,24 @@ def transfer_path(transfer_id: str, sha256_hex: str, filename: str) -> Path:
     return base / transfer_id / f"{sha256_hex[:16]}_{filename}"
 
 
-def is_safe_path(candidate: Path) -> bool:
+def is_safe_path(candidate: Path | str) -> bool:
     """Return True iff *candidate*'s realpath lives under the transfer dir.
 
-    Defends against path-traversal (``../../etc/passwd``) and symlink
-    escapes. Both sides of the check are resolved via :func:`os.path.realpath`.
+    Defends against:
+
+    * path-traversal (``../../etc/passwd``),
+    * symlink escapes — both sides resolved via :func:`os.path.realpath`,
+    * C-01: null bytes and ASCII control chars (< 0x20) — these can be
+      used to truncate the path inside lower layers (libc ``open``,
+      sqlite, logging) or to bypass naive substring checks.
     """
+    candidate_str = str(candidate) if isinstance(candidate, Path) else candidate
+    # C-01: reject null bytes / control chars before touching the FS.
+    if any(ord(c) < 32 for c in candidate_str):
+        return False
     base = os.path.realpath(resolve_transfer_dir())
     try:
-        real = os.path.realpath(candidate)
+        real = os.path.realpath(candidate_str)
     except OSError:
         return False
     base_sep = base if base.endswith(os.sep) else base + os.sep
@@ -204,6 +213,10 @@ def stage_file(
     sha, actual_size = _hash_and_copy(source, staging_tmp)
     final = transfer_path(tid, sha, filename)
     os.rename(staging_tmp, final)
+    # C-04: defense-in-depth — _hash_and_copy already opens with 0o600,
+    # but re-assert it after the rename in case the source file had
+    # broader permissions on a filesystem that doesn't honour O_EXCL mode.
+    os.chmod(final, 0o600)
 
     # Write meta.json atomically
     manifest = {
@@ -223,6 +236,8 @@ def stage_file(
     meta_tmp = meta_dir / "meta.json.tmp"
     meta_tmp.write_text(json.dumps(manifest, indent=2, sort_keys=True))
     os.rename(meta_tmp, meta_dir / "meta.json")
+    # C-04: harden manifest permissions (write_text honours umask, often 0o644).
+    os.chmod(meta_dir / "meta.json", 0o600)
 
     return TransferRecord(
         transfer_id=tid,

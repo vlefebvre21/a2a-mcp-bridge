@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -28,6 +29,31 @@ from .signals import SignalDir
 SCHEMA_PATH: Path = Path(__file__).parent / "schema.sql"
 
 logger = logging.getLogger(__name__)
+
+# C-02 hardening: defense-in-depth whitelist for SQL identifiers passed to
+# string-formatted statements (PRAGMA table_info, ALTER TABLE). Even though
+# all callers gate on ``_KNOWN_TABLES``, we re-validate the identifier here
+# to catch any future code path that bypasses the whitelist.
+#
+# We use ``re.fullmatch`` (not ``re.match``) because Python's ``$`` anchors
+# at end-of-string OR before a trailing newline, which would let
+# ``"agents\n"`` slip through.
+_SQL_IDENTIFIER_RE = re.compile(r"[a-zA-Z_][a-zA-Z0-9_]*")
+
+
+def _validate_sql_identifier(identifier: str, context: str = "identifier") -> None:
+    """Raise ValueError unless *identifier* is a safe SQLite identifier.
+
+    A safe identifier matches ``^[a-zA-Z_][a-zA-Z0-9_]*$`` — no quotes,
+    no spaces, no semicolons, no newlines. This is defense-in-depth
+    against SQL injection in code paths that interpolate identifiers
+    into statements.
+    """
+    if not identifier or not _SQL_IDENTIFIER_RE.fullmatch(identifier):
+        raise ValueError(
+            f"invalid {context} {identifier!r}: "
+            "must match [a-zA-Z_][a-zA-Z0-9_]*"
+        )
 
 
 class Store:
@@ -126,6 +152,11 @@ class Store:
             raise ValueError(
                 f"unknown table {table!r} — only {sorted(self._KNOWN_TABLES)} are allowed"
             )
+        # C-02: defense-in-depth — even though *table* is whitelisted above,
+        # re-validate it against the SQL-identifier regex before we
+        # interpolate it into a PRAGMA / ALTER statement.
+        _validate_sql_identifier(table, "table name")
+        _validate_sql_identifier(column, "column name")
         existing_cols = {
             row["name"]
             for row in self._conn.execute(
