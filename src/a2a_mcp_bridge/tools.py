@@ -367,7 +367,8 @@ def _facade_upload(
     url = f"{bus_url.rstrip('/')}/transfers/upload"
     boundary = uuid.uuid4().hex.encode()
 
-    filename = filepath.name
+    # Defensive: strip quotes and CRLF from filename to prevent HTTP header injection.
+    filename = filepath.name.replace('"', '').replace('\r', '').replace('\n', '')
     # Build multipart/form-data body manually (stdlib only).
     parts: list[bytes] = []
 

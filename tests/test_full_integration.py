@@ -198,7 +198,7 @@ class TestFileTransfers:
         # These fail the basename check: os.path.basename(filename) == filename
         bad_names = ["../etc/passwd", "../../secret.txt"]
         for bad in bad_names:
-            with pytest.raises(AssertionError, match="filename must be a bare name"):
+            with pytest.raises(ValueError, match="filename must be a bare name"):
                 # Trigger the basename check in create()
                 self.transfer_store.create(
                     id=new_transfer_id(),

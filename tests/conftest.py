@@ -16,3 +16,14 @@ def store(tmp_path: Path) -> Store:
     s = Store(str(db_path))
     s.init_schema()
     return s
+
+
+@pytest.fixture(autouse=True)
+def _allow_internal_webhooks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests use 127.0.0.1 / localhost in mock wake registries.
+
+    Our SSRF hardening rejects those by default; enable the override so
+    unit / integration tests that never open a real socket can still
+    exercise the parser.
+    """
+    monkeypatch.setenv("A2A_ALLOW_INTERNAL_WEBHOOKS", "1")

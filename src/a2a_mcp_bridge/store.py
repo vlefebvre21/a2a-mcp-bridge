@@ -56,6 +56,31 @@ def _validate_sql_identifier(identifier: str, context: str = "identifier") -> No
         )
 
 
+def _validate_column_type(column_type: str) -> None:
+    """Raise ValueError unless *column_type* is safe for SQLite ALTER TABLE.
+
+    A safe column type may contain alphanumerics, spaces, underscores,
+    parentheses, and single quotes. Explicitly blocks semicolons, comment
+    markers, null bytes, and newline characters that could turn an
+    ``ADD COLUMN`` into arbitrary execution.
+    """
+    if not column_type:
+        raise ValueError("column_type must not be empty")
+    # Fast path rejection of known SQL injection markers
+    bad_chars = {";", "--", "/*", "*/", "\x00", "\n", "\r"}
+    for bad in bad_chars:
+        if bad in column_type:
+            raise ValueError(
+                f"invalid column_type {column_type!r}: contains forbidden sequence {bad!r}"
+            )
+    # Character-level whitelist: alnum, space, underscore, parens, single quote, dot
+    if not all(c.isalnum() or c.isspace() or c in "_()'." for c in column_type):
+        raise ValueError(
+            f"invalid column_type {column_type!r}: "
+            "must contain only alphanumerics, spaces, underscores, parentheses, single quotes, and dots"
+        )
+
+
 class Store:
     """Thin SQLite repository. Not thread-safe; create one per process/thread.
 
@@ -157,6 +182,9 @@ class Store:
         # interpolate it into a PRAGMA / ALTER statement.
         _validate_sql_identifier(table, "table name")
         _validate_sql_identifier(column, "column name")
+        # C-001 defense-in-depth: column_type is interpolated directly into the
+        # ALTER TABLE statement; validate it before any database call.
+        _validate_column_type(column_type)
         existing_cols = {
             row["name"]
             for row in self._conn.execute(

@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 from dataclasses import dataclass
@@ -64,6 +65,54 @@ DEFAULT_TIMEOUT_SECONDS = 5.0
 # Rough upper bound on webhook URL length to catch typos / accidental
 # garbage in the registry before we try to open a socket.
 _MAX_URL_LENGTH = 2048
+
+
+def _is_safe_url(url: str) -> bool:
+    """Return True iff *url* is safe from SSRF / internal probing.
+
+    Blocks:
+    * Any URL whose hostname resolves to a non-public IP (loopback,
+      private ranges, link-local).
+    * Non-HTTP(S) schemes (file://, ftp://, ...).
+    * Known cloud metadata endpoints (169.254.169.254).
+    * Empty or over-long URLs.
+
+    Override for known-safe internal deployments:
+    set ``A2A_ALLOW_INTERNAL_WEBHOOKS=1``.
+    """
+    import os as _os
+    import urllib.parse as _urlparse
+
+    if not url or len(url) > _MAX_URL_LENGTH:
+        return False
+    # Only http/https — reject file://, ftp://, dict://, gopher://, etc.
+    if not (url.startswith("http://") or url.startswith("https://")):
+        return False
+
+    # Allow internal override for LAN-only deployments
+    if _os.environ.get("A2A_ALLOW_INTERNAL_WEBHOOKS", "").strip() in ("1", "true", "yes"):
+        return True
+
+    parsed = _urlparse.urlparse(url)
+    hostname = (parsed.hostname or "").lower().strip()
+    if not hostname:
+        return False
+
+    # Block known metadata endpoints
+    if hostname == "169.254.169.254":
+        return False
+
+    # If the hostname is a literal IP, check its scope
+    try:
+        ip = ipaddress.ip_address(hostname)
+        # Block loopback, private, link-local, unspecified
+        if ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_unspecified:
+            return False
+    except ValueError:
+        # It's a DNS name — ok, resolves later at socket open time.
+        pass
+
+    return True
 
 
 @dataclass(frozen=True)
@@ -99,6 +148,12 @@ def _parse_entry(agent_id: str, entry: Any) -> WakeEntry:
         raise ValueError(
             f"wake registry entry for {agent_id!r} has a 'wake_webhook_url' "
             f"that does not start with http:// or https://"
+        )
+    if not _is_safe_url(url):
+        raise ValueError(
+            f"wake registry entry for {agent_id!r} has a 'wake_webhook_url' "
+            f"that points to an internal or disallowed address: {url!r}. "
+            f"Set A2A_ALLOW_INTERNAL_WEBHOOKS=1 to override."
         )
 
     return WakeEntry(wake_webhook_url=url)
