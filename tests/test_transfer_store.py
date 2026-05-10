@@ -180,8 +180,8 @@ class TestCountPendingExcludesDeleted:
 
 class TestPathTraversalProtection:
     def test_path_traversal_protection(self, ts: TransferStore) -> None:
-        """create() with a path-traversal filename raises AssertionError."""
-        with pytest.raises(AssertionError, match="filename"):
+        """create() with a path-traversal filename raises ValueError."""
+        with pytest.raises(ValueError, match="filename"):
             ts.create(
                 id="xfer-bad",
                 sender_id="alice",

@@ -11,8 +11,9 @@ from pathlib import Path
 
 import pytest
 
-from a2a_mcp_bridge.store import Store, _validate_sql_identifier
+from a2a_mcp_bridge.store import Store, _validate_column_type, _validate_sql_identifier
 from a2a_mcp_bridge.transfers import is_safe_path, stage_file
+from a2a_mcp_bridge.wake import _is_safe_url
 
 # ---------------------------------------------------------------------------
 # C-01 — null bytes & control chars rejected by is_safe_path
@@ -172,3 +173,109 @@ class TestC04FilePermissions:
         manifest_mode = os.stat(tmp_path / rec.transfer_id / "meta.json").st_mode & 0o777
         assert payload_mode == 0o600, f"payload {oct(payload_mode)}"
         assert manifest_mode == 0o600, f"manifest {oct(manifest_mode)}"
+
+
+# ---------------------------------------------------------------------------
+# C-003 — SQL column_type validation (defense-in-depth for ALTER TABLE)
+# ---------------------------------------------------------------------------
+
+
+class TestC03ColumnTypeValidation:
+    """C-003: _validate_column_type() blocks SQL injection in DDL clauses."""
+
+    @pytest.mark.parametrize(
+        "good",
+        [
+            "TEXT",
+            "TEXT NOT NULL",
+            "TEXT NOT NULL DEFAULT 'triage'",
+            "INTEGER",
+            "VARCHAR(255)",
+            "REAL DEFAULT 0.0",
+        ],
+    )
+    def test_accepts_valid_column_type(self, good: str) -> None:
+        # Should not raise.
+        _validate_column_type(good)
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "",                              # empty
+            "TEXT; DROP TABLE agents",       # statement terminator
+            "TEXT--",                        # line comment
+            "TEXT/*evil*/",                  # block comment
+            "TEXT\x00",                      # null byte
+            "TEXT\n",                        # newline
+            "TEXT\r",                        # carriage return
+            "TEXT\"",                        # double quote
+            "TEXT`",                         # backtick
+            "TEXT = 1 OR 1=1",               # equals / boolean (not whitelisted)
+        ],
+    )
+    def test_rejects_malicious_column_type(self, bad: str) -> None:
+        with pytest.raises(ValueError, match="column_type"):
+            _validate_column_type(bad)
+
+    def test_wired_in_add_column_if_missing(self, store: Store) -> None:
+        """Smoke test: _validate_column_type is enforced before ALTER TABLE."""
+        # Normal usage must succeed (no-op because column already exists).
+        store._add_column_if_missing(
+            table="messages",
+            column="intent",
+            column_type="TEXT NOT NULL DEFAULT 'triage'",
+        )
+
+        # Malicious type must raise before any DB call.
+        with pytest.raises(ValueError, match="invalid column_type"):
+            store._add_column_if_missing(
+                table="messages",
+                column="evil_col",
+                column_type="TEXT; DROP TABLE agents",
+            )
+
+
+# ---------------------------------------------------------------------------
+# C-004 — SSRF protection on wake webhook URLs
+# ---------------------------------------------------------------------------
+
+
+class TestC04SsrfProtection:
+    """C-004: _is_safe_url() blocks internal IPs and non-HTTP(S) schemes."""
+
+    @pytest.mark.parametrize(
+        "good",
+        [
+            "http://example.com/webhooks/wake",
+            "https://bus.example.com/wake",
+            "http://1.2.3.4:8080/wake",
+        ],
+    )
+    def test_accepts_public_url(self, good: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("A2A_ALLOW_INTERNAL_WEBHOOKS", raising=False)
+        assert _is_safe_url(good) is True
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "http://127.0.0.1:8080/wake",           # loopback
+            "http://10.0.0.1/wake",                 # private
+            "http://172.16.0.1/wake",               # private
+            "http://192.168.1.1/wake",              # private
+            "http://169.254.169.254/latest/meta-data",  # metadata endpoint
+            "http://[::1]/wake",                    # IPv6 loopback
+            "file:///etc/passwd",                   # wrong scheme
+            "ftp://1.2.3.4/wake",                   # wrong scheme
+            "",                                      # empty
+            "gopher://1.2.3.4",                     # wrong scheme
+        ],
+    )
+    def test_rejects_internal_or_bad_scheme(self, bad: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("A2A_ALLOW_INTERNAL_WEBHOOKS", raising=False)
+        assert _is_safe_url(bad) is False
+
+    def test_override_env_allows_internal(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A2A_ALLOW_INTERNAL_WEBHOOKS=1 bypasses the restriction."""
+        monkeypatch.setenv("A2A_ALLOW_INTERNAL_WEBHOOKS", "1")
+        assert _is_safe_url("http://127.0.0.1:8080/wake") is True
+        assert _is_safe_url("http://10.0.0.1/wake") is True

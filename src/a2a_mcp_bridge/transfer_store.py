@@ -110,12 +110,13 @@ class TransferStore:
             The newly inserted row as a dict.
 
         Raises:
-            AssertionError: if *filename* contains path separators or
+            ValueError: if *filename* contains path separators or
                 ``..`` components.
         """
-        assert os.path.basename(filename) == filename, (
-            f"filename must be a bare name (no '/' or '..'), got: {filename!r}"
-        )
+        if os.path.basename(filename) != filename:
+            raise ValueError(
+                f"filename must be a bare name (no '/' or '..'), got: {filename!r}"
+            )
 
         created_at = datetime.now(UTC).isoformat()
 
