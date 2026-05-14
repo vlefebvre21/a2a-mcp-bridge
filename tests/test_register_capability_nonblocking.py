@@ -7,9 +7,7 @@ if the remote façade is unreachable.
 from __future__ import annotations
 
 import time
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from a2a_mcp_bridge.bus_store import HttpBusStore
 

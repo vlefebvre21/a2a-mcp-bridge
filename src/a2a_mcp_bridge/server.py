@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import logging
 import os
@@ -278,7 +279,7 @@ def _migrate_legacy_registry(store: Store, db_path: str) -> None:
 
     if rows:
         for row in rows:
-            try:
+            with contextlib.suppress(Exception):  # INSERT OR IGNORE semantics
                 store.register_capability(
                     agent_id=row[0],
                     skill_id=row[1],
@@ -287,8 +288,6 @@ def _migrate_legacy_registry(store: Store, db_path: str) -> None:
                     monetary_cost_usd=row[4],
                     tokens_per_call=row[5] or 0,
                 )
-            except Exception:
-                pass  # INSERT OR IGNORE semantics
         logger.info("Migrated %d capabilities from legacy registry.db", len(rows))
 
     # Rename legacy file (safer than delete)

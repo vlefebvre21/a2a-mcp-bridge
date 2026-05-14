@@ -17,7 +17,6 @@ from a2a_mcp_bridge.server import _migrate_legacy_registry
 from a2a_mcp_bridge.signals import SignalDir
 from a2a_mcp_bridge.store import Store
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
