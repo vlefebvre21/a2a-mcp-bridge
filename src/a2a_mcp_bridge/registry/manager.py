@@ -12,9 +12,7 @@ logger = logging.getLogger("a2a_mcp_bridge.registry")
 
 
 class CapabilityRegistry:
-    """Central registry for Hermes agent capabilities.
-
-    Thread-safety: ``_cache`` is protected by an ``RLock``. The lock
+    """Central registry for Hermes agent capabilities. The lock
     guards every mutation (``announce``) and every read
     (``query`` / ``get_agent`` / ``get_all_agents``). This prevents
     ``RuntimeError: dictionary changed size during iteration`` when
@@ -24,19 +22,16 @@ class CapabilityRegistry:
 
     def __init__(self, db_path: str = "registry.db") -> None:
         self.storage = RegistryStorage(db_path)
-        self._cache: dict[str, AgentInfo] = {}
-        self._lock = threading.RLock()
         # Warm cache from persistent storage
         for agent in self.storage.get_all_agents():
-            self._cache[agent.agent_id] = agent
+            pass
 
     # ── write ──────────────────────────────────────────────────────────
 
     def announce(self, agent: AgentInfo) -> None:
         """Register a new agent or update its capabilities."""
         self.storage.register_agent(agent)
-        with self._lock:
-            self._cache[agent.agent_id] = agent
+        pass
         logger.info(
             "Agent %r registered with %d capabilities",
             agent.name,
@@ -52,8 +47,7 @@ class CapabilityRegistry:
             keyword: Match against skill_id, description, or domain.
             max_cost_usd: Maximum monetary cost in USD per call filter.
         """
-        with self._lock:
-            agents = list(self._cache.values())
+        agents = self.storage.get_all_agents()
 
         # Filter by status
         agents = [a for a in agents if a.status == "online"]
@@ -61,9 +55,9 @@ class CapabilityRegistry:
         # Filter by keyword (match against skill_id, description, domain)
         if keyword:
             kw = keyword.lower()
-            agents = [
-                a
-                for a in agents
+        agents = [
+            a
+            for a in agents
                 if any(
                     kw in cap.skill_id.lower()
                     or kw in cap.description.lower()
@@ -87,10 +81,8 @@ class CapabilityRegistry:
 
     def get_agent(self, agent_id: str) -> AgentInfo | None:
         """Return cached agent info (or None)."""
-        with self._lock:
-            return self._cache.get(agent_id)
+        return self.storage.get_agent(agent_id)
 
     def get_all_agents(self) -> list[AgentInfo]:
         """Return all cached agents."""
-        with self._lock:
-            return list(self._cache.values())
+        return self.storage.get_all_agents()

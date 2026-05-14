@@ -17,7 +17,11 @@ ADR-002 §4 Hermes-side work.
 
 from __future__ import annotations
 
-from enum import StrEnum
+try:
+    from enum import StrEnum  # Python 3.11+
+except ImportError:
+    from enum import Enum
+    StrEnum = Enum  # type: ignore[assignment]
 
 
 class Intent(StrEnum):

@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-05-14
+### Changed
+- Centralized capability registry into main bus SQLite database (a2a-bus.sqlite) - ADR-008
+- Removed separate .registry.db and in-memory caching (RLock) - now using SQLite WAL directly
+- Added cross-host propagation via AsyncHTTPBusClient (fire-and-forget HTTP)
+- Migrated capability schema to native SQL types (FLOAT, INTEGER) instead of JSON blobs
 ## [Unreleased]
 
 ## [0.8.0] — 2026-05-06

@@ -123,6 +123,46 @@ class BusStore(Protocol):
 
 
 # ---------------------------------------------------------------------------
+    # -- capabilities -----------------------------------------------------
+
+    def register_capability(
+        self,
+        agent_id: str,
+        skill_id: str,
+        domain: str = "general",
+        description: str | None = None,
+        monetary_cost_usd: float | None = None,
+        tokens_per_call: int = 0,
+    ) -> None:
+        """Register or update a capability for an agent.
+
+        Args:
+            agent_id: The agent announcing this capability.
+            skill_id: Unique identifier for the skill (e.g., "a2a-file-transfer").
+            domain: Capability category ("compute", "analysis", etc.).
+            description: Human-readable description.
+            monetary_cost_usd: Optional cost per call in USD.
+            tokens_per_call: Estimated token consumption (for routing optimization).
+        """
+        ...
+
+    def get_capabilities(
+        self,
+        keyword: str = "",
+        max_cost_usd: float | None = None,
+    ) -> list[dict[str, Any]]:
+        """Query capabilities by keyword and/or cost ceiling.
+
+        Args:
+            keyword: Match against skill_id, description, or domain.
+            max_cost_usd: Maximum monetary cost filter (USD).
+
+        Returns:
+            List of capability dicts with keys: agent_id, skill_id, domain,
+            description, monetary_cost_usd, tokens_per_call, announced_at.
+        """
+        ...
+
 # Façade response parsers
 # ---------------------------------------------------------------------------
 

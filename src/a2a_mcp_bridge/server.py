@@ -17,10 +17,6 @@ from mcp.server.lowlevel import NotificationOptions
 from mcp.server.stdio import stdio_server
 
 from .bus_store import BusStore
-from .registry.heartbeat import HeartbeatManager
-from .registry.manager import CapabilityRegistry
-from .registry.models import AgentInfo
-from .registry.query import RegistryQuery
 from .signals import SignalDir
 from .store import Store
 from .tools import (
@@ -273,11 +269,8 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
     store.upsert_agent(agent_id)
 
     # Capability Registry — SQLite-backed, co-located with main DB
-    registry_db_path = str(Path(db_path).with_suffix(".registry.db"))
-    cap_registry = CapabilityRegistry(registry_db_path)
-    cap_query = RegistryQuery(cap_registry)
-    heartbeat_interval = int(os.environ.get("A2A_HEARTBEAT_INTERVAL", "30"))
-    heartbeat = HeartbeatManager(cap_registry, interval_seconds=heartbeat_interval)
+    # Capability Registry moved to BusStore (ADR-008)
+    # heartbeat = HeartbeatManager(cap_registry, interval_seconds=heartbeat_interval)
 
     mcp = A2AMcp("a2a-mcp-bridge")
 
@@ -647,6 +640,66 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
             "status": "success",
             "query": skill,
             "results": results,
+            "count": len(results),
+        }
+
+    # ── Capability Registry (ADR-008, centralised) ───────────────────────
+
+    @mcp.tool()
+    def capability_announce(
+        payload: str,
+    ) -> dict[str, Any]:
+        """Register or update an agent's capabilities in the registry.
+
+        Args:
+            payload: JSON string matching the AgentInfo schema (as defined in ADR-007).
+        """
+        from .registry.models import AgentInfo
+        try:
+            agent = AgentInfo.model_validate_json(payload)
+        except Exception as e:
+            raise ValueError(f"Invalid AgentInfo JSON: {e}") from e
+        
+        # Register agent and each capability in the shared bus SQLite
+        store.upsert_agent(agent.agent_id, metadata=agent.metadata)
+        
+        for cap in agent.capabilities:
+            store.register_capability(
+                agent_id=agent.agent_id,
+                skill_id=cap.skill_id,
+                domain=cap.domain or "general",
+                description=cap.description,
+                monetary_cost_usd=getattr(cap.cost, "monetary_cost_usd", None) if hasattr(cap, "cost") else None,
+                tokens_per_call=getattr(cap.cost, "tokens_per_call", 0) if hasattr(cap, "cost") else 0,
+            )
+        
+        return {"status": "ok", "agent_id": agent.agent_id, "capabilities_registered": len(agent.capabilities)}
+
+    @mcp.tool()
+    def capability_list() -> dict[str, Any]:
+        """List all available capabilities across all registered agents."""
+        results = store.get_capabilities()
+        return {"capabilities": results, "count": len(results)}
+
+    @mcp.tool()
+    def capability_find_best(
+        skill: str,
+        max_tokens: int | None = None,
+    ) -> dict[str, Any]:
+        """Find the best matching agent for a specific skill keyword.
+
+        Args:
+            skill: Keyword to match against skill_id or description.
+            max_tokens: Optional token-cost ceiling for scoring (optimization hint).
+        """
+        # Simple keyword filter, returns list of matching capabilities
+        results = store.get_capabilities(keyword=skill)
+        # Sort by tokens_per_call (lowest first), then announced_at (newest)
+        results.sort(key=lambda x: (x.get("tokens_per_call", 0), -hash(x.get("announced_at", "") or "")))
+        return {
+            "status": "success",
+            "query": skill,
+            "results": results[:10],  # Top 10
             "count": len(results),
         }
 
