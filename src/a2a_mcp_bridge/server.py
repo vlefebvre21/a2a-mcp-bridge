@@ -250,6 +250,37 @@ class A2AMcp(FastMCP):
                 await fn()
 
 
+def _migrate_legacy_registry_if_needed(conn):
+    """Auto-migrate legacy .registry.db to bus.sqlite (ADR-008 blocker fix #4).
+    Runs on startup if ~/.local/share/a2a-mcp-bridge/.registry.db exists."""
+    from pathlib import Path as PPath
+    legacy_db = PPath.home() / ".local" / "share" / "a2a-mcp-bridge" / ".registry.db"
+    if not legacy_db.exists() or conn is None:
+        return
+    import tempfile
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".sqlite") as tmp:
+        temp_db = PPath(tmp.name)
+    try:
+        result = subprocess.run(["python3", "scripts/migrate_registry_to_bus.py"
+                           , str(legacy_db), str(temp_db)],
+               capture_output=True, text=True, timeout=30)
+        if result.returncode == 0:
+            # Import data into real DB
+            for sql in filter(None, temp_db.read_text().split(";\n")):
+                if not sql.strip().startswith("PRAGMA"):
+                    try:
+                        conn.execute(sql + ";")
+                    except Exception:
+                        pass  # Skip errors (schema may exist)
+            legacy_db.rename(legacy_db.with_suffix(".db.bak"))
+        else:
+            print(f"Migration warn: {result.stderr}")
+    except Exception as e:
+        print(f"Migration error: {e}")
+    finally:
+        temp_db.unlink(missing_ok=True)
+
+
 def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None, bus_url: str | None = None, bus_api_key: str | None = None) -> FastMCP:
     if bus_url:
         # ADR-006 Step 1: remote bus via HTTP façade.
@@ -261,6 +292,8 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
         sd = SignalDir(signal_dir_path or _resolve_signal_dir())
         store = Store(db_path, signal_dir=sd)
         store.init_schema()
+        # ADR-008 blocker fix #4: auto-migrate legacy registry on boot
+        _migrate_legacy_registry_if_needed(store._conn)  # type: ignore
         signal_dir = sd
         # Warm the module-level waker cache so the first tool call doesn't pay
         # the registry-read cost. The return value is discarded — tool closures
