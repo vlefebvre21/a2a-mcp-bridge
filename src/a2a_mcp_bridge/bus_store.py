@@ -121,6 +121,28 @@ class BusStore(Protocol):
         """
         ...
 
+    # -- capabilities (ADR-008) -------------------------------------------
+
+    def register_capability(
+        self,
+        agent_id: str,
+        skill_id: str,
+        domain: str = "general",
+        description: str | None = None,
+        monetary_cost_usd: float | None = None,
+        tokens_per_call: int = 0,
+    ) -> None:
+        """Register or update a capability for an agent."""
+        ...
+
+    def get_capabilities(
+        self,
+        keyword: str = "",
+        max_cost_usd: float | None = None,
+    ) -> list[dict[str, Any]]:
+        """Query capabilities by keyword and/or cost ceiling."""
+        ...
+
 
 # ---------------------------------------------------------------------------
 # Façade response parsers
@@ -499,6 +521,63 @@ class HttpBusStore:
             raise PermissionError(f"transfer {transfer_id} access denied")
 
         return {"deleted": True, "transfer_id": transfer_id}
+
+    # -- capabilities (ADR-008) -------------------------------------------
+
+    def register_capability(
+        self,
+        agent_id: str,
+        skill_id: str,
+        domain: str = "general",
+        description: str | None = None,
+        monetary_cost_usd: float | None = None,
+        tokens_per_call: int = 0,
+    ) -> None:
+        """Register capability via HTTP façade. Fire-and-forget semantics."""
+        payload: dict[str, Any] = {
+            "agent_id": agent_id,
+            "skill_id": skill_id,
+            "domain": domain,
+            "description": description,
+            "monetary_cost_usd": monetary_cost_usd,
+            "tokens_per_call": tokens_per_call,
+        }
+        try:
+            resp = self._client.post(
+                self._url("/capability-announce"),
+                json=payload,
+            )
+            resp.raise_for_status()
+        except self._httpx.HTTPError as exc:
+            log.warning("register_capability failed (best-effort): %s", exc)
+        except Exception as exc:
+            log.warning("register_capability failed (unexpected): %s", exc)
+
+    def get_capabilities(
+        self,
+        keyword: str = "",
+        max_cost_usd: float | None = None,
+    ) -> list[dict[str, Any]]:
+        """Query capabilities via HTTP façade."""
+        params: dict[str, Any] = {}
+        if keyword:
+            params["keyword"] = keyword
+        if max_cost_usd is not None:
+            params["max_cost_usd"] = max_cost_usd
+        try:
+            resp = self._client.post(
+                self._url("/capability-list"),
+                json=params,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data.get("capabilities", [])
+        except self._httpx.HTTPError as exc:
+            log.warning("get_capabilities failed: %s", exc)
+            return []
+        except Exception as exc:
+            log.warning("get_capabilities failed (unexpected): %s", exc)
+            return []
 
     # -- lifecycle ---------------------------------------------------------
 
