@@ -318,8 +318,11 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
     store.upsert_agent(agent_id)
 
     # Capability Registry — centralized in a2a-bus.sqlite (ADR-008)
-    # Legacy .registry.db auto-migrated on first boot if present
-    _migrate_legacy_registry(store, db_path)
+    # Legacy .registry.db auto-migrated on first boot if present.
+    # Only applies to the local Store backend; HttpBusStore points to a
+    # remote façade that owns its own registry state.
+    if isinstance(store, Store):
+        _migrate_legacy_registry(store, db_path)
 
     mcp = A2AMcp("a2a-mcp-bridge")
 

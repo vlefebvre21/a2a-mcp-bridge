@@ -580,7 +580,8 @@ class HttpBusStore:
             )
             resp.raise_for_status()
             data = resp.json()
-            return data.get("capabilities", [])
+            caps: list[dict[str, Any]] = data.get("capabilities", [])
+            return caps
         except self._httpx.HTTPError as exc:
             log.warning("get_capabilities failed: %s", exc)
             return []
