@@ -16,6 +16,7 @@ import hashlib
 import logging
 import tempfile
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
@@ -228,6 +229,9 @@ class HttpBusStore:
         self._client = _httpx.Client(
             timeout=_httpx.Timeout(timeout),
             headers=headers,
+        )
+        self._propagation_pool = ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="cap-propagate"
         )
 
     # -- helpers ------------------------------------------------------------
@@ -542,10 +546,15 @@ class HttpBusStore:
             "monetary_cost_usd": monetary_cost_usd,
             "tokens_per_call": tokens_per_call,
         }
+        self._propagation_pool.submit(self._sync_propagate, payload)
+
+    def _sync_propagate(self, payload: dict[str, Any]) -> None:
+        """Run the HTTP POST in a background thread (non-blocking caller)."""
         try:
             resp = self._client.post(
                 self._url("/capability-announce"),
                 json=payload,
+                timeout=2.0,
             )
             resp.raise_for_status()
         except self._httpx.HTTPError as exc:
@@ -582,5 +591,6 @@ class HttpBusStore:
     # -- lifecycle ---------------------------------------------------------
 
     def close(self) -> None:
-        """Close the underlying httpx.Client."""
+        """Close the underlying httpx.Client and propagation pool."""
+        self._propagation_pool.shutdown(wait=False)
         self._client.close()
