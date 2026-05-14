@@ -248,6 +248,10 @@ class HttpBusStore:
             headers=headers,
         )
 
+        # ADR-008 AC#1: Initialize propagator for cross-host capability sync
+        from .http_bus_store import AsyncHTTPBusClient  # type: ignore[import-not-found]
+        self._propagator: AsyncHTTPBusClient | None = None  # TODO: Pass remote_url via env/config
+
     # -- helpers ------------------------------------------------------------
 
     def _url(self, path: str) -> str:
@@ -540,6 +544,40 @@ class HttpBusStore:
 
         return {"deleted": True, "transfer_id": transfer_id}
 
+
+    def register_capability(
+        self,
+        agent_id: str,
+        skill_id: str,
+        domain: str = "general",
+        description: str | None = None,
+        monetary_cost_usd: float | None = None,
+        tokens_per_call: int = 0,
+    ) -> dict[str, Any]:
+        """Register capability with optional cross-host propagation (ADR-008 AC#1)."""
+        # Local registration via HTTP facade
+        path = f"/api/v1/capability-announce?agent_id={agent_id}&skill_id={skill_id}"
+        payload = {"domain": domain, "description": description,
+                   "monetary_cost_usd": monetary_cost_usd, "tokens_per_call": tokens_per_call}
+        resp = self._client.post(self.base_url + path, json=payload)
+        if resp.status_code == 200:
+            result = {"registered": True, "agent_id": agent_id}
+            # Cross-host propagation (fire-and-forget)
+            if self._propagator:
+                from .http_bus_store import CapabilityAnnouncement  # type: ignore[import-not-found]
+                ann = CapabilityAnnouncement(agent_id=agent_id, skill_id=skill_id,
+                                           domain=domain, description=description)
+                import asyncio
+                asyncio.create_task(self._propagate(ann),)
+            return result
+        resp.raise_for_status()
+
+    async def _propagate(self, ann) -> None:
+        """Fire-and-forget propagation to remote bus."""
+        try:
+            await self._propagator.propagate_capability(ann)
+        except Exception:
+            pass  # Don't let prop errors block registration
     # -- lifecycle ---------------------------------------------------------
 
     def close(self) -> None:
