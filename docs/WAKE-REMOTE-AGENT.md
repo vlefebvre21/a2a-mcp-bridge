@@ -1,0 +1,169 @@
+# Câbler le Wake A2A vers un Agent Distant (Mac → VPS)
+
+> Guide testé le 14 mai 2026 avec Hermes Agent sur macOS (M5 Max) et VPS Ubuntu (Hetzner).
+> Temps estimé : 15 minutes si tout est prêt.
+
+## Prérequis
+
+| Composant | Où | Vérification |
+|---|---|---|
+| Hermes Agent installé | Mac + VPS | `hermes --version` |
+| LM Studio avec modèle chargé | Mac | `lms ps` |
+| `autossh` | Mac | `which autossh` (sinon `brew install autossh`) |
+| SSH sans mot de passe vers VPS | Mac | `ssh vps echo ok` |
+| a2a-mcp-bridge | VPS | `a2a-mcp-bridge --version` |
+| Facade A2A active | VPS | `curl http://127.0.0.1:8080/health` |
+
+## Architecture
+
+```text
+[Agent VPS] --agent_send--> [Facade VPS :8080]
+                                    |
+                          POST /webhooks/wake
+                                    |
+                                    v
+                          [VPS 127.0.0.1:PORT]
+                                    |
+                           tunnel reverse-SSH
+                                    |
+                                    v
+                          [Mac 127.0.0.1:PORT]
+                                    |
+                       Gateway Hermes (webhook)
+                                    |
+                                    v
+                         Agent poll inbox → ex�cute
+```
+
+## Étape 1 — Choisir un port
+
+Les agents VPS utilisent les ports 8650-8659. Pour un agent distant, choisir un port hors de cette plage (ex : 8665).
+
+Vérifier qu'il est libre sur le VPS :
+
+```bash
+ss -tlnp | grep 8665
+```
+
+## Étape 2 — Configurer le profil Hermes sur le Mac
+
+### 2.1 Section webhook dans config.yaml
+
+```yaml
+platforms:
+  webhook:
+    enabled: true
+    extra:
+      host: 127.0.0.1
+      port: 8665          # Le port choisi
+      rate_limit: 1
+      secret: "<WAKE_SECRET>"
+```
+
+Récupérer le secret depuis le VPS :
+
+```bash
+python3 -c "import json; print(json.load(open('/home/vince/.a2a-wake-registry.json'))['wake_webhook_secret'])"
+```
+
+### 2.2 Créer webhook_subscriptions.json (CRITIQUE)
+
+Attention : les routes webhook se configurent uniquement via ce fichier JSON, pas dans config.yaml. Le fichier doit être placé à la racine du profil :
+
+```json
+{
+  "wake": {
+    "description": "A2A wake-up — triggers agent to read inbox when a peer sends a message",
+    "events": [],
+    "secret": "<WAKE_SECRET>",
+    "prompt": "You have been woken up by the A2A bus. Read your inbox with mcp_a2a_agent_inbox(). If any message has intent=execute, load the a2a-task-worker skill and follow its workflow (ack, execute, result — all replies with intent=fyi). Otherwise, load a2a-inbox-triage and process normally. Never wrap up prematurely on an execute message.",
+    "skills": ["a2a-inbox-triage", "a2a-task-worker"],
+    "deliver": "log",
+    "created_at": "2026-01-01T00:00:00Z"
+  }
+}
+```
+
+> Piège fréquent : ne PAS mettre la config des routes dans config.yaml sous une clé webhook_subscriptions. Hermes lit uniquement le fichier JSON webhook_subscriptions.json pour les routes dynamiques (cf. gateway/platforms/webhook.py ligne 60).
+
+### 2.3 Vérifier l'agent ID A2A
+
+Dans config.yaml, la section mcp_servers.a2a doit avoir le bon agent ID :
+
+```yaml
+mcp_servers:
+  a2a:
+    env:
+      A2A_AGENT_ID: vlbeau-macqwen36   # doit matcher le wake registry
+```
+
+### 2.4 Configurer le plist launchd du gateway
+
+Le plist doit pointer vers le bon profil via HERMES_HOME :
+
+```xml
+<key>HERMES_HOME</key>
+<string>/Users/vince/.hermes/profiles/<nom></string>
+```
+
+## Étape 3 — Monter le tunnel reverse-SSH
+
+### 3.1 Test manuel
+
+```bash
+autossh -M 0 -f -N -R 8665:localhost:8665 \
+  -o ServerAliveInterval=30 \
+  -o ServerAliveCountMax=3 \
+  -o ExitOnForwardFailure=yes \
+  vps
+```
+
+Vérifier sur le VPS :
+
+```bash
+ss -tlnp | grep 8665
+# Doit afficher : LISTEN 0 128 127.0.0.1:8665 0.0.0.0:*
+```
+
+### 3.2 Rendre persistant via launchd
+
+Créer un fichier ~/Library/LaunchAgents/com.vlbeau.<nom>-tunnel.plist avec KeepAlive=true et RunAtLoad=true. Voir l'exemple dans le dossier docs/examples/.
+
+## Étape 4 — Ajouter l'entrée wake registry sur le VPS
+
+```bash
+python3 <<'PY'
+import json
+p = "/home/vince/.a2a-wake-registry.json"
+d = json.loads(open(p).read())
+d["agents"]["vlbeau-macqwen36"] = {
+    "wake_webhook_url": "http://127.0.0.1:8665/webhooks/wake"
+}
+open(p, "w").write(json.dumps(d, indent=4, sort_keys=True))
+print("OK")
+PY
+```
+
+## Étape 5 — Tester bout en bout
+
+Depuis le VPS :
+
+```bash
+curl -X POST http://127.0.0.1:8665/webhooks/wake \
+  -H "Content-Type: application/json" \
+  -d '{"agent_id":"vlbeau-macqwen36","reason":"test"}'
+```
+
+Réponse attendue : HTTP 202 ou 200. Si 404, voir Troubleshooting.
+
+## Troubleshooting
+
+| Symptôme | Cause | Solution |
+|---|---|---|
+| routes: (none configured) dans les logs | webhook_subscriptions.json manquant ou mal placé | Vérifier que le fichier est à la racine du profil (pas dans config.yaml) |
+| 404: Unknown route: wake | Le gateway n'a pas chargé les routes | Redémarrer le gateway après création du JSON |
+| Tunnel tombé après mise en veille Mac | autossh reconnecte automatiquement au réveil | Vérifier avec ss -tlnp sur le VPS |
+| Gateway ne démarre pas avec le bon profil | HERMES_HOME mal configuré dans le plist | Vérifier grep HERMES_HOME dans le plist launchd |
+| Log Telegram bot token already in use | Un autre gateway utilise le même token | Stopper l'autre process avec kill |
+
+> Leçon retenue : la partie la plus traitresse est le fichier webhook_subscriptions.json. Sans lui, le webhook écoute mais ne route rien. Ce n'est documenté nulle part dans la doc officielle Hermes.
