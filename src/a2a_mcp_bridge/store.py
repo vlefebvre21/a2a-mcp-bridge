@@ -547,3 +547,62 @@ class Store:
 
         messages = self.read_inbox(agent_id, limit=limit, unread_only=True)
         return messages, False
+
+    # ── capabilities (ADR-008) ─────────────────────────────────────────
+
+    def register_capability(
+        self,
+        agent_id: str,
+        skill_id: str,
+        domain: str = "general",
+        description: str | None = None,
+        monetary_cost_usd: float | None = None,
+        tokens_per_call: int = 0,
+    ) -> None:
+        """Register or update a capability for an agent in the shared bus SQLite."""
+        self._conn.execute(
+            """
+            INSERT OR REPLACE INTO capabilities
+                (agent_id, skill_id, domain, description, monetary_cost_usd, tokens_per_call)
+            VALUES (?, ?, ?, ?, ?, ?);
+            """,
+            (agent_id, skill_id, domain, description, monetary_cost_usd, tokens_per_call),
+        )
+
+    def get_capabilities(
+        self,
+        keyword: str = "",
+        max_cost_usd: float | None = None,
+    ) -> list[dict[str, Any]]:
+        """Query capabilities by keyword and/or cost ceiling."""
+        sql = "SELECT agent_id, skill_id, domain, description, monetary_cost_usd, tokens_per_call, announced_at FROM capabilities"
+        conditions = []
+        params: list[Any] = []
+
+        if keyword:
+            kw = f"%{keyword}%"
+            conditions.append("(skill_id LIKE ? OR domain LIKE ? OR description LIKE ?)")
+            params.extend([kw, kw, kw])
+
+        if max_cost_usd is not None:
+            conditions.append("(monetary_cost_usd IS NULL OR monetary_cost_usd <= ?)")
+            params.append(max_cost_usd)
+
+        if conditions:
+            sql += " WHERE " + " AND ".join(conditions)
+
+        sql += " ORDER BY tokens_per_call ASC, announced_at DESC"
+
+        rows = self._conn.execute(sql, params).fetchall()
+        return [
+            {
+                "agent_id": r[0],
+                "skill_id": r[1],
+                "domain": r[2],
+                "description": r[3],
+                "monetary_cost_usd": r[4],
+                "tokens_per_call": r[5],
+                "announced_at": r[6],
+            }
+            for r in rows
+        ]

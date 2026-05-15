@@ -79,6 +79,10 @@ def _make_http_store() -> tuple[HttpBusStore, MagicMock]:
     store._timeout = 65.0
     store._httpx = fake_httpx
     store._client = MagicMock()
+    from concurrent.futures import ThreadPoolExecutor
+    store._propagation_pool = ThreadPoolExecutor(
+        max_workers=2, thread_name_prefix="cap-propagate"
+    )
     return store, store._client
 
 
@@ -100,6 +104,8 @@ def _mock_response(json_data: dict, status_code: int = 200):
 def http_store_and_client():
     store, client = _make_http_store()
     yield store, client
+    # Clean up the propagation pool
+    store._propagation_pool.shutdown(wait=False)
     # Clean up the injected httpx module
     import a2a_mcp_bridge.bus_store as mod
 

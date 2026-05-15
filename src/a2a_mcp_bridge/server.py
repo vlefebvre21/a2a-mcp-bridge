@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import logging
 import os
@@ -17,10 +18,6 @@ from mcp.server.lowlevel import NotificationOptions
 from mcp.server.stdio import stdio_server
 
 from .bus_store import BusStore
-from .registry.heartbeat import HeartbeatManager
-from .registry.manager import CapabilityRegistry
-from .registry.models import AgentInfo
-from .registry.query import RegistryQuery
 from .signals import SignalDir
 from .store import Store
 from .tools import (
@@ -254,6 +251,54 @@ class A2AMcp(FastMCP):
                 await fn()
 
 
+def _migrate_legacy_registry(store: Store, db_path: str) -> None:
+    """Auto-migrate legacy .registry.db to bus.sqlite (ADR-008).
+
+    Runs at bridge startup. If a legacy ``{db_path}.registry.db`` file
+    exists, its ``capabilities`` rows are copied into the shared
+    ``a2a-bus.sqlite`` via INSERT OR IGNORE (idempotent). The legacy
+    file is then renamed to ``.registry.db.bak`` (not deleted, for safety).
+    """
+    legacy_path = Path(str(db_path).removesuffix(".sqlite") + ".registry.db")
+    if not legacy_path.exists():
+        return
+
+    import sqlite3
+
+    try:
+        legacy_conn = sqlite3.connect(str(legacy_path))
+        rows = legacy_conn.execute(
+            "SELECT agent_id, skill_id, domain, description, "
+            "monetary_cost_usd, tokens_per_call, announced_at "
+            "FROM capabilities"
+        ).fetchall()
+        legacy_conn.close()
+    except Exception as exc:
+        logger.warning("Failed to read legacy registry.db: %s", exc)
+        return
+
+    if rows:
+        for row in rows:
+            with contextlib.suppress(Exception):  # INSERT OR IGNORE semantics
+                store.register_capability(
+                    agent_id=row[0],
+                    skill_id=row[1],
+                    domain=row[2] or "general",
+                    description=row[3],
+                    monetary_cost_usd=row[4],
+                    tokens_per_call=row[5] or 0,
+                )
+        logger.info("Migrated %d capabilities from legacy registry.db", len(rows))
+
+    # Rename legacy file (safer than delete)
+    bak_path = legacy_path.with_suffix(".registry.db.bak")
+    try:
+        legacy_path.rename(bak_path)
+        logger.info("Legacy registry.db renamed to %s", bak_path)
+    except OSError as exc:
+        logger.warning("Could not rename legacy registry.db: %s", exc)
+
+
 def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None, bus_url: str | None = None, bus_api_key: str | None = None) -> FastMCP:
     if bus_url:
         # ADR-006 Step 1: remote bus via HTTP façade.
@@ -272,12 +317,12 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
         _load_waker_if_stale()
     store.upsert_agent(agent_id)
 
-    # Capability Registry — SQLite-backed, co-located with main DB
-    registry_db_path = str(Path(db_path).with_suffix(".registry.db"))
-    cap_registry = CapabilityRegistry(registry_db_path)
-    cap_query = RegistryQuery(cap_registry)
-    heartbeat_interval = int(os.environ.get("A2A_HEARTBEAT_INTERVAL", "30"))
-    heartbeat = HeartbeatManager(cap_registry, interval_seconds=heartbeat_interval)
+    # Capability Registry — centralized in a2a-bus.sqlite (ADR-008)
+    # Legacy .registry.db auto-migrated on first boot if present.
+    # Only applies to the local Store backend; HttpBusStore points to a
+    # remote façade that owns its own registry state.
+    if isinstance(store, Store):
+        _migrate_legacy_registry(store, db_path)
 
     mcp = A2AMcp("a2a-mcp-bridge")
 
@@ -577,26 +622,44 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
         )
         return tool_agent_delete_file(store, agent_id, transfer_id)
 
-    # ── Capability Registry tools ──────────────────────────────────────
+    # ── Capability Registry tools (ADR-008, centralized) ──────────────
 
     @mcp.tool()
     def capability_announce(payload: str) -> dict[str, Any]:
         """Register or update an agent's capabilities in the registry.
 
         Args:
-            payload: JSON string matching the AgentInfo schema.
+            payload: JSON string matching the AgentInfo schema (as defined in ADR-007).
         """
         from pydantic import ValidationError
 
         from .exceptions import MCPValidationError
+        from .registry.models import AgentInfo
 
         validate_tool_params(tool="capability_announce", params={"payload": payload})
         try:
             agent = AgentInfo.model_validate_json(payload)
         except ValidationError as exc:
             raise MCPValidationError(f"invalid capability payload: {exc}") from exc
-        cap_registry.announce(agent)
-        return {"status": "ok", "registered": len(agent.capabilities)}
+
+        store.upsert_agent(agent.agent_id, metadata=agent.metadata)
+        for cap in agent.capabilities:
+            cost_obj = getattr(cap, "cost", None)
+            store.register_capability(
+                agent_id=agent.agent_id,
+                skill_id=cap.skill_id,
+                domain=cap.domain or "general",
+                description=cap.description,
+                monetary_cost_usd=getattr(cost_obj, "monetary_cost_usd", None) if cost_obj else None,
+                tokens_per_call=getattr(cost_obj, "tokens_per_call", 0) if cost_obj else 0,
+            )
+        return {"status": "ok", "agent_id": agent.agent_id, "capabilities_registered": len(agent.capabilities)}
+
+    @mcp.tool()
+    def capability_discover() -> dict[str, Any]:
+        """List all available capabilities across all registered agents."""
+        results = store.get_capabilities()
+        return {"capabilities": results, "count": len(results)}
 
     @mcp.tool()
     def capability_query(keyword: str = "", max_cost_usd: float | None = None) -> dict[str, Any]:
@@ -606,47 +669,22 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
             keyword: Match against skill_id, description, or domain.
             max_cost_usd: Maximum monetary cost (USD) per call filter.
         """
-        agents = cap_registry.query(keyword=keyword, max_cost_usd=max_cost_usd)
-        return {
-            "agents": [
-                {
-                    "agent_id": a.agent_id,
-                    "name": a.name,
-                    "status": a.status,
-                    "capabilities": [c.skill_id for c in a.capabilities],
-                }
-                for a in agents
-            ],
-            "count": len(agents),
-        }
+        results = store.get_capabilities(keyword=keyword, max_cost_usd=max_cost_usd)
+        return {"capabilities": results, "count": len(results)}
 
     @mcp.tool()
-    def capability_discover() -> dict[str, Any]:
-        """List all available capabilities across all registered agents."""
-        from datetime import UTC, datetime
-
-        capabilities = cap_query.discover_all()
-        return {
-            "status": "success",
-            "type": "capability_discovery",
-            "capabilities": capabilities,
-            "total_agents": len({c["agent_id"] for c in capabilities}),
-            "timestamp": datetime.now(UTC).isoformat(),
-        }
-
-    @mcp.tool()
-    def capability_find_best(skill: str, max_tokens: float | None = None) -> dict[str, Any]:
-        """Find the best matching agents for a specific skill keyword.
+    def capability_find_best(skill: str, max_tokens: int | None = None) -> dict[str, Any]:
+        """Find the best matching agent for a specific skill keyword.
 
         Args:
             skill: Keyword to match against skill_id or description.
             max_tokens: Optional token-cost ceiling for scoring.
         """
-        results = cap_query.find_best(skill, max_tokens=max_tokens)
+        results = store.get_capabilities(keyword=skill)
         return {
             "status": "success",
             "query": skill,
-            "results": results,
+            "results": results[:10],
             "count": len(results),
         }
 
@@ -657,13 +695,8 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
         Args:
             agent_id: The agent sending the heartbeat.
         """
-        heartbeat.ping(agent_id)
+        store.upsert_agent(agent_id)
         return {"status": "ok", "agent_id": agent_id}
-
-    # ── Lifecycle hooks ────────────────────────────────────────────────
-
-    mcp.on_startup(heartbeat.start)
-    mcp.on_shutdown(heartbeat.stop)
 
     return mcp
 

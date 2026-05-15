@@ -290,14 +290,16 @@ def _valid_agent_payload(agent_id: str = "alice", skill: str = "code-review") ->
 
 
 def test_capability_announce_wrapper_registers_agent(tmp_path: Path) -> None:
-    """build_server().capability_announce must persist the agent via cap_registry."""
+    """build_server().capability_announce must persist the agent via store."""
     db = tmp_path / "bus.sqlite"
     mcp = server_module.build_server(agent_id="alice", db_path=str(db))
     capability_announce = _get_tool_fn(mcp, "capability_announce")
 
     result = capability_announce(payload=_valid_agent_payload("alice", "python"))
 
-    assert result == {"status": "ok", "registered": 1}
+    assert result["status"] == "ok"
+    assert result["agent_id"] == "alice"
+    assert result["capabilities_registered"] == 1
 
 
 def test_capability_announce_wrapper_rejects_bad_payload(tmp_path: Path) -> None:
@@ -337,7 +339,7 @@ def test_capability_query_wrapper_returns_matching_agents(tmp_path: Path) -> Non
     result = query(keyword="python")
 
     assert result["count"] == 1
-    assert result["agents"][0]["agent_id"] == "alice"
+    assert result["capabilities"][0]["agent_id"] == "alice"
 
 
 def test_capability_discover_wrapper_lists_all_capabilities(tmp_path: Path) -> None:
@@ -352,8 +354,7 @@ def test_capability_discover_wrapper_lists_all_capabilities(tmp_path: Path) -> N
 
     result = discover()
 
-    assert result["status"] == "success"
-    assert result["total_agents"] == 2
+    assert result["count"] == 2
     assert len(result["capabilities"]) == 2
 
 
@@ -373,7 +374,7 @@ def test_capability_find_best_wrapper_returns_matches(tmp_path: Path) -> None:
 
 
 def test_capability_ping_wrapper_records_heartbeat(tmp_path: Path) -> None:
-    """capability_ping must delegate to HeartbeatManager.ping."""
+    """capability_ping must touch the agent's last_seen_at via store.upsert_agent."""
     db = tmp_path / "bus.sqlite"
     mcp = server_module.build_server(agent_id="alice", db_path=str(db))
     ping = _get_tool_fn(mcp, "capability_ping")

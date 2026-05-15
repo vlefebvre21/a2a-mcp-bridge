@@ -6,6 +6,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-05-14
+
+### Added
+
+- **ADR-008: Capability Registry centralization** — the capability registry
+  is now stored in the shared `a2a-bus.sqlite` database instead of a separate
+  `.registry.db` file. This ensures fleet-wide visibility for agents on the
+  same node (closes #53).
+
+### Changed
+
+- `capability_announce` / `capability_query` / `capability_discover` /
+  `capability_find_best` / `capability_ping` now read/write from the shared
+  bus SQLite via `Store.register_capability()` / `Store.get_capabilities()`
+  instead of the per-bridge `CapabilityRegistry` + `HeartbeatManager`.
+- `capability_ping` now calls `store.upsert_agent()` instead of a separate
+  heartbeat manager (simplification).
+
+### Removed
+
+- `CapabilityRegistry`, `RegistryQuery`, `HeartbeatManager` initialization
+  from `build_server()`. These classes remain in the codebase for backward
+  compatibility but are no longer wired at server startup.
+
+### Migration
+
+- On first boot, if a legacy `{db_path}.registry.db` file exists, its
+  capabilities are automatically migrated into `a2a-bus.sqlite` and the
+  legacy file is renamed to `.registry.db.bak` (idempotent, safe to rerun).
+
 ## [0.8.0] — 2026-05-06
 
 ### Added

@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -121,6 +122,28 @@ class BusStore(Protocol):
         """
         ...
 
+    # -- capabilities (ADR-008) -------------------------------------------
+
+    def register_capability(
+        self,
+        agent_id: str,
+        skill_id: str,
+        domain: str = "general",
+        description: str | None = None,
+        monetary_cost_usd: float | None = None,
+        tokens_per_call: int = 0,
+    ) -> None:
+        """Register or update a capability for an agent."""
+        ...
+
+    def get_capabilities(
+        self,
+        keyword: str = "",
+        max_cost_usd: float | None = None,
+    ) -> list[dict[str, Any]]:
+        """Query capabilities by keyword and/or cost ceiling."""
+        ...
+
 
 # ---------------------------------------------------------------------------
 # Façade response parsers
@@ -206,6 +229,12 @@ class HttpBusStore:
         self._client = _httpx.Client(
             timeout=_httpx.Timeout(timeout),
             headers=headers,
+        )
+        # Bounded pool (2 workers) for fire-and-forget capability propagation.
+        # On burst: extra submissions queue in FIFO internal queue (unbounded
+        # in stdlib; acceptable here because register_capability is rare).
+        self._propagation_pool = ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="cap-propagate"
         )
 
     # -- helpers ------------------------------------------------------------
@@ -500,8 +529,77 @@ class HttpBusStore:
 
         return {"deleted": True, "transfer_id": transfer_id}
 
+    # -- capabilities (ADR-008) -------------------------------------------
+
+    def register_capability(
+        self,
+        agent_id: str,
+        skill_id: str,
+        domain: str = "general",
+        description: str | None = None,
+        monetary_cost_usd: float | None = None,
+        tokens_per_call: int = 0,
+    ) -> None:
+        """Register capability via HTTP façade. Fire-and-forget semantics."""
+        payload: dict[str, Any] = {
+            "agent_id": agent_id,
+            "skill_id": skill_id,
+            "domain": domain,
+            "description": description,
+            "monetary_cost_usd": monetary_cost_usd,
+            "tokens_per_call": tokens_per_call,
+        }
+        self._propagation_pool.submit(self._sync_propagate, payload)
+
+    def _sync_propagate(self, payload: dict[str, Any]) -> None:
+        """Run the HTTP POST in a background thread (non-blocking caller)."""
+        try:
+            resp = self._client.post(
+                self._url("/capability-announce"),
+                json=payload,
+                timeout=2.0,
+            )
+            resp.raise_for_status()
+        except self._httpx.HTTPError as exc:
+            log.warning("register_capability failed (best-effort): %s", exc)
+        except Exception as exc:
+            log.warning("register_capability failed (unexpected): %s", exc)
+
+    def get_capabilities(
+        self,
+        keyword: str = "",
+        max_cost_usd: float | None = None,
+    ) -> list[dict[str, Any]]:
+        """Query capabilities via HTTP façade."""
+        params: dict[str, Any] = {}
+        if keyword:
+            params["keyword"] = keyword
+        if max_cost_usd is not None:
+            params["max_cost_usd"] = max_cost_usd
+        try:
+            resp = self._client.post(
+                self._url("/capability-list"),
+                json=params,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            caps: list[dict[str, Any]] = data.get("capabilities", [])
+            return caps
+        except self._httpx.HTTPError as exc:
+            log.warning("get_capabilities failed: %s", exc)
+            return []
+        except Exception as exc:
+            log.warning("get_capabilities failed (unexpected): %s", exc)
+            return []
+
     # -- lifecycle ---------------------------------------------------------
 
     def close(self) -> None:
-        """Close the underlying httpx.Client."""
+        """Close the underlying httpx.Client and propagation pool.
+
+        Lets in-flight propagation POSTs finish (bounded by the per-request
+        2.0s timeout in ``_sync_propagate``) while cancelling queued futures
+        that haven't started. Propagation is best-effort by design.
+        """
+        self._propagation_pool.shutdown(wait=True, cancel_futures=True)
         self._client.close()
