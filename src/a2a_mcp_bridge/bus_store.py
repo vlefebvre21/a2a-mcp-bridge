@@ -230,6 +230,9 @@ class HttpBusStore:
             timeout=_httpx.Timeout(timeout),
             headers=headers,
         )
+        # Bounded pool (2 workers) for fire-and-forget capability propagation.
+        # On burst: extra submissions queue in FIFO internal queue (unbounded
+        # in stdlib; acceptable here because register_capability is rare).
         self._propagation_pool = ThreadPoolExecutor(
             max_workers=2, thread_name_prefix="cap-propagate"
         )
@@ -592,6 +595,11 @@ class HttpBusStore:
     # -- lifecycle ---------------------------------------------------------
 
     def close(self) -> None:
-        """Close the underlying httpx.Client and propagation pool."""
-        self._propagation_pool.shutdown(wait=False)
+        """Close the underlying httpx.Client and propagation pool.
+
+        Lets in-flight propagation POSTs finish (bounded by the per-request
+        2.0s timeout in ``_sync_propagate``) while cancelling queued futures
+        that haven't started. Propagation is best-effort by design.
+        """
+        self._propagation_pool.shutdown(wait=True, cancel_futures=True)
         self._client.close()

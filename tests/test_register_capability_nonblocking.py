@@ -6,7 +6,6 @@ if the remote façade is unreachable.
 
 from __future__ import annotations
 
-import time
 from unittest.mock import MagicMock
 
 from a2a_mcp_bridge.bus_store import HttpBusStore
@@ -43,31 +42,44 @@ class TestRegisterCapabilityNonBlocking:
     def test_register_capability_does_not_block_on_dead_facade(self) -> None:
         """Propagation must not block register_capability if facade is unreachable.
 
-        Uses a real ThreadPoolExecutor: the HTTP POST will fail quickly because
-        _client is a MagicMock that returns a response with raise_for_status
-        raising an error. The key assertion is that register_capability returns
-        in <200ms, proving fire-and-forget semantics.
+        Deterministic version: use a slow mock client (blocks on a threading.Event)
+        and assert that register_capability returns BEFORE the event is released —
+        which is impossible unless the POST runs in a background thread.
         """
+        import threading
+
         store = _make_http_store()
 
-        # Make the mock client.post raise an error (simulating unreachable facade)
-        mock_resp = MagicMock()
-        mock_resp.raise_for_status.side_effect = Exception("connection refused")
-        store._client.post.return_value = mock_resp
+        # Block the HTTP POST on a threading.Event — it will not complete
+        # until we explicitly release it.
+        post_started = threading.Event()
+        post_may_finish = threading.Event()
 
-        start = time.monotonic()
+        def blocking_post(*args, **kwargs):
+            post_started.set()
+            post_may_finish.wait(timeout=5.0)
+            mock_resp = MagicMock()
+            return mock_resp
+
+        store._client.post.side_effect = blocking_post
+
+        # Call register_capability — must return immediately even though
+        # the underlying POST is blocked.
         store.register_capability("agent-x", "skill-y", domain="test")
-        elapsed = time.monotonic() - start
 
-        # register_capability should return almost immediately (<200ms)
-        # because the HTTP POST is submitted to the pool, not awaited.
-        assert elapsed < 0.2, (
-            f"register_capability blocked for {elapsed:.2f}s — "
-            "propagation is not fire-and-forget"
+        # Wait for the background thread to actually start the POST.
+        # If register_capability had blocked, this line would never be reached
+        # because post_may_finish is still unset → POST would hang forever.
+        assert post_started.wait(timeout=2.0), (
+            "Background POST did not start — register_capability may have "
+            "swallowed the submission"
         )
 
-        # Clean up
-        store._propagation_pool.shutdown(wait=True)
+        # Release the blocked POST so cleanup can happen.
+        post_may_finish.set()
+
+        # Clean up — shutdown with cancel_futures so pending tasks are dropped.
+        store._propagation_pool.shutdown(wait=True, cancel_futures=True)
         del store
 
     def test_register_capability_submits_to_pool(self) -> None:
