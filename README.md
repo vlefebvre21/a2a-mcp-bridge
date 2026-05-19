@@ -74,6 +74,8 @@ Six core MCP tools (stable since v0.5) plus five Capability Registry tools
 - `capability_ping(agent_id)` — Signal that an agent is still alive
   (heartbeat ping).
 
+> 💡 **Example:** See [`examples/hermes_agent_client.py`](examples/hermes_agent_client.py) for a working demo of `capability_announce` + `capability_ping` heartbeat loop.
+
 Backed by SQLite by default (zero-dep, single file). For remote/distributed
 setups, an optional HTTP facade (`serve-facade`) exposes the bus over REST —
 see [HTTP Facade (Remote Mode)](#http-facade-remote-mode) below.
