@@ -4,17 +4,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.10.0] — 2026-05-19
 
-### Changed
+### Breaking
 
-- **Bounded `CapabilityRegistry._cache`** — the in-memory agent cache now has
-  an upper bound (default 10 000 agents).  When the cache is at capacity,
-  `announce()` for a *new* `agent_id` raises `MCPValidationError`; updates to
-  an already-cached agent are always allowed.  The limit is configurable via
-  the `A2A_CAPABILITY_MAX_AGENTS` environment variable.  This prevents a
-  hostile or buggy agent from exhausting RAM by announcing unlimited unique
-  agents (refs #54 item 3).
+- **`capability_announce` signature changed** — the tool no longer accepts a
+  single `payload: str` (JSON-encoded `AgentInfo`). Instead, callers must pass
+  structured keyword parameters: `agent_id`, `name`, `capabilities`,
+  `status`, `metadata`. Migration: replace
+  `capability_announce(payload=json.dumps({...}))` with
+  `capability_announce(agent_id=..., name=..., capabilities=[...])`.
+
+### Added
+
+- **`MAX_CACHED_AGENTS` cap** (default 10 000) on `CapabilityRegistry._cache`.
+  When the cache is at capacity, `announce()` for a *new* `agent_id` raises
+  `MCPValidationError`; updates to an already-cached agent are always allowed.
+  The limit is configurable via the `A2A_CAPABILITY_MAX_AGENTS` environment
+  variable. This prevents a hostile or buggy agent from exhausting RAM by
+  announcing unlimited unique agents (refs #54 item 3).
+- **README link** to `examples/hermes_agent_client.py` (refs #54 item 1).
+
+### Documented
+
+- `AgentInfo.name` is presentational, not unique — multiple agents may share
+  the same display name; `agent_id` remains the sole identity key (refs
+  #54 item 2).
 
 ## [0.9.0] — 2026-05-14
 
