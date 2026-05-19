@@ -270,7 +270,9 @@ class TestC04SsrfProtection:
             "gopher://1.2.3.4",                     # wrong scheme
         ],
     )
-    def test_rejects_internal_or_bad_scheme(self, bad: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_rejects_internal_or_bad_scheme(
+        self, bad: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.delenv("A2A_ALLOW_INTERNAL_WEBHOOKS", raising=False)
         assert _is_safe_url(bad) is False
 
