@@ -56,7 +56,9 @@ class TestMetadataValidationOnSend:
 class TestMetadataCorruptRecovery:
     """_row_to_message must not crash on corrupt JSON in the DB."""
 
-    def test_corrupt_metadata_returns_none(self, store: Store, caplog: pytest.LogCaptureFixture) -> None:
+    def test_corrupt_metadata_returns_none(
+        self, store: Store, caplog: pytest.LogCaptureFixture
+    ) -> None:
         """If the DB holds invalid JSON, _row_to_message returns metadata=None."""
         store.upsert_agent("alice")
         store.upsert_agent("bob")
