@@ -122,7 +122,6 @@ def test_get_agent_missing(registry: CapabilityRegistry):
 
 def test_announce_at_cap_allows_update_for_existing_agent(registry: CapabilityRegistry):
     """Announcing an already-cached agent_id is always allowed, even at cap."""
-    from a2a_mcp_bridge.exceptions import MCPValidationError
 
     # Set a tiny cap for testing
     registry._max_cached_agents = 2

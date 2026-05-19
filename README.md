@@ -63,8 +63,8 @@ Six core MCP tools (stable since v0.5) plus five Capability Registry tools
 
 **Capability Registry tools:**
 
-- `capability_announce(payload)` — Register or update an agent's
-  capabilities in the registry.
+- `capability_announce(agent_id, name, capabilities, status, metadata)` — Register or update an agent's
+  capabilities in the registry. Takes structured params instead of a JSON string.
 - `capability_query(keyword, max_cost)` — Query agents by keyword and/or
   cost ceiling.
 - `capability_discover()` — List all available capabilities across all
@@ -919,9 +919,9 @@ The registry lives in `src/a2a_mcp_bridge/registry/` with five modules:
 
 Five new tools are registered alongside the core six:
 
-- **`capability_announce(payload)`** — Register or update an agent's
-  capabilities. `payload` is a JSON string matching the `AgentInfo` model.
-  Returns `{"status": "ok", "registered": <count>}`.
+- **`capability_announce(agent_id, name, capabilities, status, metadata)`** — Register or update an agent's
+  capabilities. Takes structured params for better MCP discoverability (see AgentInfo model).
+  Returns `{\"status\": \"ok\", \"capabilities_registered\": <count>}`.
 - **`capability_query(keyword="", max_cost=None)`** — Filter online agents by
   keyword (matches `skill_id`, `description`, `domain`) and/or a monetary
   cost ceiling. Returns a list of matching `AgentInfo` objects with enriched
@@ -974,25 +974,33 @@ On startup, the `CapabilityRegistry` warms its in-memory cache from
 
 ```python
 # 1. Announce an agent with two capabilities
-capability_announce(payload=json.dumps({
-    "agent_id": "research-agent",
-    "name": "Research Agent",
-    "capabilities": [
+capability_announce(
+    agent_id="research-agent",
+    name="Research Agent",
+    capabilities=[
         {
             "skill_id": "web-search",
             "description": "Search the web and summarise results",
             "domain": "research",
-            "cost": {"tokens_per_call": 500, "latency_ms": 2000, "type": "api"}
+            "cost": {
+                "tokens_per_call": 500,
+                "latency_ms": 2000,
+                "type": "api",
+            },
         },
         {
             "skill_id": "pdf-summarise",
             "description": "Summarise PDF documents",
             "domain": "research",
-            "cost": {"tokens_per_call": 1000, "latency_ms": 3000, "type": "local"}
-        }
-    ]
-}))
-# → {"status": "ok", "registered": 2}
+            "cost": {
+                "tokens_per_call": 1000,
+                "latency_ms": 3000,
+                "type": "local",
+            },
+        },
+    ],
+)
+# → {"status": "ok", "capabilities_registered": 2}
 
 # 2. Query by keyword
 capability_query(keyword="search")

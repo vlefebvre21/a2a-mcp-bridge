@@ -262,31 +262,27 @@ def test_agent_send_file_wrapper_rejects_missing_file_path(tmp_path: Path) -> No
 # ---------------------------------------------------------------------------
 
 
-def _valid_agent_payload(agent_id: str = "alice", skill: str = "code-review") -> str:
-    """Return a minimal valid AgentInfo JSON payload for announce tests."""
-    import json as _json
-
-    return _json.dumps(
-        {
-            "agent_id": agent_id,
-            "name": f"Agent {agent_id}",
-            "status": "online",
-            "capabilities": [
-                {
-                    "skill_id": skill,
-                    "description": f"{skill} capability",
-                    "domain": "software",
-                    "cost": {
-                        "tokens_per_call": 1000,
-                        "latency_ms": 500,
-                        "monetary_cost_usd": 0.01,
-                        "type": "local",
-                    },
-                }
-            ],
-            "metadata": {},
-        }
-    )
+def _valid_agent_payload(agent_id: str = "alice", skill: str = "code-review") -> dict[str, Any]:
+    """Return a minimal valid AgentInfo dict for announce tests."""
+    return {
+        "agent_id": agent_id,
+        "name": f"Agent {agent_id}",
+        "status": "online",
+        "capabilities": [
+            {
+                "skill_id": skill,
+                "description": f"{skill} capability",
+                "domain": "software",
+                "cost": {
+                    "tokens_per_call": 1000,
+                    "latency_ms": 500,
+                    "monetary_cost_usd": 0.01,
+                    "type": "local",
+                },
+            }
+        ],
+        "metadata": {},
+    }
 
 
 def test_capability_announce_wrapper_registers_agent(tmp_path: Path) -> None:
@@ -295,7 +291,7 @@ def test_capability_announce_wrapper_registers_agent(tmp_path: Path) -> None:
     mcp = server_module.build_server(agent_id="alice", db_path=str(db))
     capability_announce = _get_tool_fn(mcp, "capability_announce")
 
-    result = capability_announce(payload=_valid_agent_payload("alice", "python"))
+    result = capability_announce(**_valid_agent_payload("alice", "python"))
 
     assert result["status"] == "ok"
     assert result["agent_id"] == "alice"
@@ -303,27 +299,31 @@ def test_capability_announce_wrapper_registers_agent(tmp_path: Path) -> None:
 
 
 def test_capability_announce_wrapper_rejects_bad_payload(tmp_path: Path) -> None:
-    """capability_announce must raise MCPValidationError for invalid JSON."""
+    """capability_announce must raise MCPValidationError for invalid data."""
     from a2a_mcp_bridge.exceptions import MCPValidationError
 
     db = tmp_path / "bus.sqlite"
     mcp = server_module.build_server(agent_id="alice", db_path=str(db))
     capability_announce = _get_tool_fn(mcp, "capability_announce")
 
-    with pytest.raises(MCPValidationError, match="invalid capability payload"):
-        capability_announce(payload="not-valid-json")
+    with pytest.raises(MCPValidationError, match="invalid capability data"):
+        capability_announce(
+            agent_id="alice",
+            name="Alice",
+            capabilities=[{"skill_id": "bad"}],  # missing required fields
+        )
 
 
-def test_capability_announce_wrapper_rejects_empty_payload(tmp_path: Path) -> None:
-    """capability_announce must call validate_tool_params (empty string rejected)."""
+def test_capability_announce_wrapper_rejects_empty_agent_id(tmp_path: Path) -> None:
+    """capability_announce must call validate_tool_params (empty agent_id rejected)."""
     from a2a_mcp_bridge.exceptions import MCPValidationError
 
     db = tmp_path / "bus.sqlite"
     mcp = server_module.build_server(agent_id="alice", db_path=str(db))
     capability_announce = _get_tool_fn(mcp, "capability_announce")
 
-    with pytest.raises(MCPValidationError, match="payload"):
-        capability_announce(payload="")
+    with pytest.raises(MCPValidationError, match="agent_id"):
+        capability_announce(agent_id="", name="Alice")
 
 
 def test_capability_query_wrapper_returns_matching_agents(tmp_path: Path) -> None:
@@ -333,8 +333,8 @@ def test_capability_query_wrapper_returns_matching_agents(tmp_path: Path) -> Non
     announce = _get_tool_fn(mcp, "capability_announce")
     query = _get_tool_fn(mcp, "capability_query")
 
-    announce(payload=_valid_agent_payload("alice", "python-review"))
-    announce(payload=_valid_agent_payload("bob", "rust-review"))
+    announce(**_valid_agent_payload("alice", "python-review"))
+    announce(**_valid_agent_payload("bob", "rust-review"))
 
     result = query(keyword="python")
 
@@ -349,8 +349,8 @@ def test_capability_discover_wrapper_lists_all_capabilities(tmp_path: Path) -> N
     announce = _get_tool_fn(mcp, "capability_announce")
     discover = _get_tool_fn(mcp, "capability_discover")
 
-    announce(payload=_valid_agent_payload("alice", "skill-a"))
-    announce(payload=_valid_agent_payload("bob", "skill-b"))
+    announce(**_valid_agent_payload("alice", "skill-a"))
+    announce(**_valid_agent_payload("bob", "skill-b"))
 
     result = discover()
 
@@ -365,7 +365,7 @@ def test_capability_find_best_wrapper_returns_matches(tmp_path: Path) -> None:
     announce = _get_tool_fn(mcp, "capability_announce")
     find_best = _get_tool_fn(mcp, "capability_find_best")
 
-    announce(payload=_valid_agent_payload("alice", "code-review-python"))
+    announce(**_valid_agent_payload("alice", "code-review-python"))
 
     result = find_best(skill="python")
 
