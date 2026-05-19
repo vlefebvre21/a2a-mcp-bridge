@@ -383,13 +383,23 @@ def create_app(
 
         if ttl_hours > max_ttl_hours:
             return JSONResponse(
-                {"error": {"code": "TTL_EXCEEDED", "message": f"ttl_hours exceeds maximum ({max_ttl_hours})"}},
+                {
+                    "error": {
+                        "code": "TTL_EXCEEDED",
+                        "message": f"ttl_hours exceeds maximum ({max_ttl_hours})",
+                    }
+                },
                 status_code=400,
             )
 
         if xfer_store.count_pending(sender) >= max_pending:
             return JSONResponse(
-                {"error": {"code": "TOO_MANY_PENDING", "message": f"sender {sender} has too many pending transfers"}},
+                {
+                    "error": {
+                        "code": "TOO_MANY_PENDING",
+                        "message": f"sender {sender} has too many pending transfers",
+                    }
+                },
                 status_code=429,
             )
 
@@ -411,7 +421,12 @@ def create_app(
                     # Clean up partial upload
                     tmp_path.unlink(missing_ok=True)
                     return JSONResponse(
-                        {"error": {"code": "PAYLOAD_TOO_LARGE", "message": "file exceeds maximum allowed size"}},
+                        {
+                            "error": {
+                                "code": "PAYLOAD_TOO_LARGE",
+                                "message": "file exceeds maximum allowed size",
+                            }
+                        },
                         status_code=413,
                     )
                 sha.update(chunk)
@@ -459,7 +474,12 @@ def create_app(
         agent_id = request.headers.get("X-Agent-Id") or request.query_params.get("agent_id", "")
         if agent_id != record["recipient_id"]:
             return JSONResponse(
-                {"error": {"code": "FORBIDDEN", "message": "agent_id is not the transfer recipient"}},
+                {
+                    "error": {
+                        "code": "FORBIDDEN",
+                        "message": "agent_id is not the transfer recipient",
+                    }
+                },
                 status_code=403,
             )
 
