@@ -77,7 +77,8 @@ def _validate_column_type(column_type: str) -> None:
     if not all(c.isalnum() or c.isspace() or c in "_()'." for c in column_type):
         raise ValueError(
             f"invalid column_type {column_type!r}: "
-            "must contain only alphanumerics, spaces, underscores, parentheses, single quotes, and dots"
+            "must contain only alphanumerics, spaces, underscores, "
+            "parentheses, single quotes, and dots"
         )
 
 
@@ -400,7 +401,9 @@ class Store:
             try:
                 rows = self._conn.execute(
                     """
-                    SELECT id, sender_id, recipient_id, body, metadata, created_at, read_at, sender_session_id, intent
+                    SELECT id, sender_id, recipient_id, body,
+                           metadata, created_at, read_at,
+                           sender_session_id, intent
                     FROM messages
                     WHERE recipient_id = ? AND read_at IS NULL
                     ORDER BY created_at ASC
@@ -418,7 +421,9 @@ class Store:
                     # Re-read to include read_at values in returned objects
                     rows = self._conn.execute(
                         f"""
-                        SELECT id, sender_id, recipient_id, body, metadata, created_at, read_at, sender_session_id, intent
+                        SELECT id, sender_id, recipient_id, body,
+                               metadata, created_at, read_at,
+                               sender_session_id, intent
                         FROM messages
                         WHERE id IN ({placeholders})
                         ORDER BY created_at ASC
@@ -432,7 +437,9 @@ class Store:
         else:
             rows = self._conn.execute(
                 """
-                SELECT id, sender_id, recipient_id, body, metadata, created_at, read_at, sender_session_id, intent
+                SELECT id, sender_id, recipient_id, body,
+                       metadata, created_at, read_at,
+                       sender_session_id, intent
                 FROM messages
                 WHERE recipient_id = ?
                 ORDER BY created_at DESC
@@ -477,7 +484,9 @@ class Store:
         if since_ts is None:
             rows = self._conn.execute(
                 """
-                SELECT id, sender_id, recipient_id, body, metadata, created_at, read_at, sender_session_id, intent
+                SELECT id, sender_id, recipient_id, body,
+                       metadata, created_at, read_at,
+                       sender_session_id, intent
                 FROM messages
                 WHERE recipient_id = ?
                 ORDER BY created_at DESC
@@ -488,7 +497,9 @@ class Store:
         else:
             rows = self._conn.execute(
                 """
-                SELECT id, sender_id, recipient_id, body, metadata, created_at, read_at, sender_session_id, intent
+                SELECT id, sender_id, recipient_id, body,
+                       metadata, created_at, read_at,
+                       sender_session_id, intent
                 FROM messages
                 WHERE recipient_id = ? AND created_at >= ?
                 ORDER BY created_at ASC
@@ -575,7 +586,11 @@ class Store:
         max_cost_usd: float | None = None,
     ) -> list[dict[str, Any]]:
         """Query capabilities by keyword and/or cost ceiling."""
-        sql = "SELECT agent_id, skill_id, domain, description, monetary_cost_usd, tokens_per_call, announced_at FROM capabilities"
+        sql = (
+            "SELECT agent_id, skill_id, domain, description, "
+            "monetary_cost_usd, tokens_per_call, announced_at "
+            "FROM capabilities"
+        )
         conditions = []
         params: list[Any] = []
 
