@@ -120,6 +120,63 @@ def test_get_agent_missing(registry: CapabilityRegistry):
     assert registry.get_agent("nonexistent") is None
 
 
+def test_announce_at_cap_allows_update_for_existing_agent(registry: CapabilityRegistry):
+    """Announcing an already-cached agent_id is always allowed, even at cap."""
+
+    # Set a tiny cap for testing
+    registry._max_cached_agents = 2
+    registry.announce(_make_agent("a1", "Agent 1"))
+    registry.announce(_make_agent("a2", "Agent 2"))
+
+    # Updating an existing agent at cap must succeed
+    v2 = _make_agent("a1", "Agent 1 v2")
+    v2.capabilities = [
+        Capability(
+            skill_id="updated-skill",
+            description="Updated",
+            domain="test",
+            cost=CostModel(tokens_per_call=5, latency_ms=10),
+        )
+    ]
+    registry.announce(v2)  # should NOT raise
+
+    found = registry.get_agent("a1")
+    assert found is not None
+    assert found.name == "Agent 1 v2"
+    assert found.capabilities[0].skill_id == "updated-skill"
+
+
+def test_announce_at_cap_raises_for_new_agent(registry: CapabilityRegistry):
+    """Announcing a new agent_id when the cache is at capacity raises MCPValidationError."""
+    from a2a_mcp_bridge.exceptions import MCPValidationError
+
+    # Set a tiny cap for testing
+    registry._max_cached_agents = 2
+    registry.announce(_make_agent("a1", "Agent 1"))
+    registry.announce(_make_agent("a2", "Agent 2"))
+
+    # A brand-new agent_id at cap must raise
+    with pytest.raises(MCPValidationError, match="capability registry cache full"):
+        registry.announce(_make_agent("a3", "Agent 3"))
+
+    # Cache size must not have grown
+    assert len(registry.get_all_agents()) == 2
+
+
+def test_announce_max_agents_env_var(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """A2A_CAPABILITY_MAX_AGENTS env var overrides the default cap."""
+    from a2a_mcp_bridge.exceptions import MCPValidationError
+
+    monkeypatch.setenv("A2A_CAPABILITY_MAX_AGENTS", "1")
+    db_path = tmp_path / "registry.db"
+    reg = CapabilityRegistry(str(db_path))
+
+    reg.announce(_make_agent("a1", "Agent 1"))
+
+    with pytest.raises(MCPValidationError, match="capability registry cache full"):
+        reg.announce(_make_agent("a2", "Agent 2"))
+
+
 def test_concurrent_announce_and_query_no_race(registry: CapabilityRegistry):
     """Regression guard: announce() and query() must be safe under concurrency.
 

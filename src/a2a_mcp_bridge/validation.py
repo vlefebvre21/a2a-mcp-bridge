@@ -204,9 +204,12 @@ def _validate_agent_delete_file(params: dict[str, Any]) -> None:
 
 
 def _validate_capability_announce(params: dict[str, Any]) -> None:
-    """Validate capability_announce parameters (payload must be non-empty string)."""
+    """Validate capability_announce parameters (agent_id and name required, non-empty)."""
     from .exceptions import MCPValidationError
 
-    payload = params.get("payload")
-    if not isinstance(payload, str) or not payload:
-        raise MCPValidationError("'payload' must be a non-empty JSON string")
+    agent_id = params.get("agent_id")
+    if not isinstance(agent_id, str) or not agent_id:
+        raise MCPValidationError("'agent_id' must be a non-empty string")
+    name = params.get("name")
+    if not isinstance(name, str) or not name:
+        raise MCPValidationError("'name' must be a non-empty string")

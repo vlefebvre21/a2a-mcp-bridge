@@ -33,7 +33,13 @@ class Capability(BaseModel):
 
 
 class AgentInfo(BaseModel):
-    """Full information about a registered Hermes agent."""
+    """Full information about a registered Hermes agent.
+
+    ``agent_id`` is the unique key on the bus. ``name`` is purely
+    presentational — two agents may share the same display name
+    (e.g. "Python Specialist") as long as their ``agent_id`` values
+    differ. The bus never enforces name uniqueness.
+    """
 
     agent_id: str
     name: str

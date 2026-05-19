@@ -631,22 +631,43 @@ def build_server(
     # ── Capability Registry tools (ADR-008, centralized) ──────────────
 
     @mcp.tool()
-    def capability_announce(payload: str) -> dict[str, Any]:
+    def capability_announce(
+        agent_id: str,
+        name: str,
+        capabilities: list[dict[str, Any]] | None = None,
+        status: str = "online",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Register or update an agent's capabilities in the registry.
 
         Args:
-            payload: JSON string matching the AgentInfo schema (as defined in ADR-007).
+            agent_id: Unique agent identifier (lowercase, matches ^[a-z0-9][a-z0-9_-]{0,63}$).
+            name: Human-readable display name for the agent.
+            capabilities: List of capability objects, each with skill_id, description,
+                domain, cost (with tokens_per_call, latency_ms, type), and optional fields.
+            status: Agent status — "online", "offline", or "degraded".
+            metadata: Optional arbitrary key/value metadata for the agent.
         """
         from pydantic import ValidationError
 
         from .exceptions import MCPValidationError
         from .registry.models import AgentInfo
 
-        validate_tool_params(tool="capability_announce", params={"payload": payload})
+        validate_tool_params(
+            tool="capability_announce",
+            params={"agent_id": agent_id, "name": name},
+        )
+        agent_data: dict[str, Any] = {
+            "agent_id": agent_id,
+            "name": name,
+            "capabilities": capabilities or [],
+            "status": status,
+            "metadata": metadata or {},
+        }
         try:
-            agent = AgentInfo.model_validate_json(payload)
+            agent = AgentInfo.model_validate(agent_data)
         except ValidationError as exc:
-            raise MCPValidationError(f"invalid capability payload: {exc}") from exc
+            raise MCPValidationError(f"invalid capability data: {exc}") from exc
 
         store.upsert_agent(agent.agent_id, metadata=agent.metadata)
         for cap in agent.capabilities:
