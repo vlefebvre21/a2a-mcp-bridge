@@ -119,7 +119,11 @@ class RateLimiter:
         for k in stale:
             del self.hits[k]
         if stale:
-            logger.debug("prune_stale removed %d entries from %d", len(stale), len(self.hits) + len(stale))
+            logger.debug(
+                "prune_stale removed %d entries from %d",
+                len(stale),
+                len(self.hits) + len(stale),
+            )
         return len(stale)
 
     def cleanup(self) -> int:
