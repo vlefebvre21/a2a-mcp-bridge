@@ -134,19 +134,25 @@ class TestGetCapabilities:
         rows = _populated_store.get_capabilities()
         assert len(rows) == 5
 
-    def test_get_capabilities_keyword_filter_skill(self, tmp_path: Path, _populated_store: Store) -> None:
+    def test_get_capabilities_keyword_filter_skill(
+        self, tmp_path: Path, _populated_store: Store
+    ) -> None:
         """Keyword filter matches skill_id."""
         rows = _populated_store.get_capabilities(keyword="translate")
         assert len(rows) == 2
         assert all("translate" in r["skill_id"] for r in rows)
 
-    def test_get_capabilities_keyword_filter_domain(self, tmp_path: Path, _populated_store: Store) -> None:
+    def test_get_capabilities_keyword_filter_domain(
+        self, tmp_path: Path, _populated_store: Store
+    ) -> None:
         """Keyword filter matches domain."""
         rows = _populated_store.get_capabilities(keyword="vision")
         assert len(rows) == 1
         assert rows[0]["skill_id"] == "image-gen"
 
-    def test_get_capabilities_keyword_filter_description(self, tmp_path: Path, _populated_store: Store) -> None:
+    def test_get_capabilities_keyword_filter_description(
+        self, tmp_path: Path, _populated_store: Store
+    ) -> None:
         """Keyword filter matches description."""
         rows = _populated_store.get_capabilities(keyword="documents")
         assert len(rows) == 1
@@ -169,7 +175,9 @@ class TestGetCapabilities:
         assert len(rows) == 1
         assert rows[0]["monetary_cost_usd"] is None
 
-    def test_get_capabilities_combined_filters(self, tmp_path: Path, _populated_store: Store) -> None:
+    def test_get_capabilities_combined_filters(
+        self, tmp_path: Path, _populated_store: Store
+    ) -> None:
         """keyword + max_cost_usd applied together."""
         rows = _populated_store.get_capabilities(keyword="nlp", max_cost_usd=0.03)
         # translate@0.02 (agent-a), translate@0.01 (agent-c); summarize@0.05 excluded
@@ -191,7 +199,9 @@ class TestGetCapabilities:
         tokens = [r["tokens_per_call"] for r in rows]
         assert tokens == sorted(tokens), "Should be ordered by tokens_per_call ASC"
 
-    def test_get_capabilities_keyword_no_match(self, tmp_path: Path, _populated_store: Store) -> None:
+    def test_get_capabilities_keyword_no_match(
+        self, tmp_path: Path, _populated_store: Store
+    ) -> None:
         """Keyword that matches nothing returns empty list."""
         rows = _populated_store.get_capabilities(keyword="xyz-nonexistent")
         assert rows == []
