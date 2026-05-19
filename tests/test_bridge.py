@@ -88,7 +88,8 @@ class TestAgentInbox:
         self, store_with_alice_and_bob: Store
     ) -> None:
         result = tool_agent_inbox(
-            store_with_alice_and_bob, "bob", limit=10, unread_only=True, session_id=None, signal_dir=None
+            store_with_alice_and_bob, "bob",
+            limit=10, unread_only=True, session_id=None, signal_dir=None,
         )
         assert result["messages"] == []
 
