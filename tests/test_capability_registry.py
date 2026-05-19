@@ -110,6 +110,36 @@ class TestRegisterCapability:
         assert row["tokens_per_call"] == 0
         assert row["description"] is None
 
+    def test_register_capability_same_name_different_agent_id(
+        self, tmp_path: Path
+    ) -> None:
+        """# Issue #54 item 2: name collisions are OK — two agents may share
+        the same display name as long as their agent_id differs."""
+        store = _make_store(tmp_path)
+
+        # Both agents share the name "Python Specialist" but differ in agent_id
+        store.register_capability(
+            agent_id="agent-alpha",
+            skill_id="python-lint",
+            domain="dev",
+            description="Lint Python code",
+            monetary_cost_usd=None,
+            tokens_per_call=100,
+        )
+        store.register_capability(
+            agent_id="agent-beta",
+            skill_id="python-test",
+            domain="dev",
+            description="Test Python code",
+            monetary_cost_usd=None,
+            tokens_per_call=200,
+        )
+
+        rows = store.get_capabilities()
+        assert len(rows) == 2
+        agent_ids = {r["agent_id"] for r in rows}
+        assert agent_ids == {"agent-alpha", "agent-beta"}
+
 
 # ---------------------------------------------------------------------------
 # get_capabilities
