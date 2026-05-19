@@ -200,7 +200,10 @@ class TestBuildLimiters:
     """Test that limiters are built from env with correct RPMs."""
 
     def test_defaults(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        for var in ("A2A_RATE_LIMIT_GLOBAL", "A2A_RATE_LIMIT_SEND", "A2A_RATE_LIMIT_INBOX", "A2A_RATE_LIMIT_REGISTER"):
+        for var in (
+            "A2A_RATE_LIMIT_GLOBAL", "A2A_RATE_LIMIT_SEND",
+            "A2A_RATE_LIMIT_INBOX", "A2A_RATE_LIMIT_REGISTER",
+        ):
             monkeypatch.delenv(var, raising=False)
 
         limiters = build_limiters()
