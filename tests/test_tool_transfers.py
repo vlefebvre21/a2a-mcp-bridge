@@ -18,7 +18,9 @@ def store(tmp_path: Path) -> Store:
     return s
 
 
-def test_tool_agent_send_file_happy_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, store: Store) -> None:
+def test_tool_agent_send_file_happy_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, store: Store,
+) -> None:
     monkeypatch.setenv("A2A_TRANSFER_DIR", str(tmp_path / "xfer"))
     src = tmp_path / "report.md"
     src.write_text("# Report\n" * 100)
@@ -44,7 +46,9 @@ def test_tool_agent_send_file_happy_path(tmp_path: Path, monkeypatch: pytest.Mon
     assert body["locator"]["scheme"] == "file"
 
 
-def test_tool_agent_fetch_file_returns_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, store: Store) -> None:
+def test_tool_agent_fetch_file_returns_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, store: Store,
+) -> None:
     monkeypatch.setenv("A2A_TRANSFER_DIR", str(tmp_path / "xfer"))
     src = tmp_path / "r.md"
     src.write_text("hello")
@@ -57,7 +61,9 @@ def test_tool_agent_fetch_file_returns_path(tmp_path: Path, monkeypatch: pytest.
     assert Path(got["path"]).read_text() == "hello"
 
 
-def test_tool_agent_delete_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, store: Store) -> None:
+def test_tool_agent_delete_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, store: Store,
+) -> None:
     monkeypatch.setenv("A2A_TRANSFER_DIR", str(tmp_path / "xfer"))
     src = tmp_path / "r.md"
     src.write_text("hi")
