@@ -58,7 +58,9 @@ def test_cleanup_stale_marks_offline(registry: CapabilityRegistry, heartbeat: He
     assert updated.status == "offline"
 
 
-def test_cleanup_stale_leaves_fresh_alone(registry: CapabilityRegistry, heartbeat: HeartbeatManager):
+def test_cleanup_stale_leaves_fresh_alone(
+    registry: CapabilityRegistry, heartbeat: HeartbeatManager,
+):
     agent = _make_agent()
     registry.announce(agent)
 
@@ -72,7 +74,9 @@ def test_cleanup_stale_leaves_fresh_alone(registry: CapabilityRegistry, heartbea
     assert updated.status == "online"
 
 
-def test_cleanup_stale_skips_already_offline(registry: CapabilityRegistry, heartbeat: HeartbeatManager):
+def test_cleanup_stale_skips_already_offline(
+    registry: CapabilityRegistry, heartbeat: HeartbeatManager,
+):
     agent = _make_agent()
     agent.status = "offline"
     registry.announce(agent)
