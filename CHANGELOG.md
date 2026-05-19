@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Bounded `CapabilityRegistry._cache`** — the in-memory agent cache now has
+  an upper bound (default 10 000 agents).  When the cache is at capacity,
+  `announce()` for a *new* `agent_id` raises `MCPValidationError`; updates to
+  an already-cached agent are always allowed.  The limit is configurable via
+  the `A2A_CAPABILITY_MAX_AGENTS` environment variable.  This prevents a
+  hostile or buggy agent from exhausting RAM by announcing unlimited unique
+  agents (refs #54 item 3).
+
 ## [0.9.0] — 2026-05-14
 
 ### Added
