@@ -83,7 +83,8 @@ class TestRegisterCapabilityNonBlocking:
         del store
 
     def test_register_capability_submits_to_pool(self) -> None:
-        """register_capability should submit to the propagation pool, not call _client.post directly."""
+        """register_capability should submit to the propagation pool,
+        not call _client.post directly."""
         store = _make_http_store()
 
         # Replace the real pool with a mock that tracks submissions but doesn't execute
