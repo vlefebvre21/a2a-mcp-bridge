@@ -1,4 +1,5 @@
-"""SQLite-backed transfer store for ADR-007 Phase C — tracks file transfers staged on the facade server.
+"""SQLite-backed transfer store for ADR-007 Phase C
+— tracks file transfers staged on the facade server.
 
 Source of truth split (ADR-007):
   - Phase A (same-machine): ``transfers.py`` uses ``meta.json`` files on disk.
