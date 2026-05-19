@@ -770,7 +770,10 @@ def test_send_file_facade_upload_valueerror(
     src = tmp_path / "big.txt"
     src.write_text("data")
 
-    with patch("a2a_mcp_bridge.tools._facade_upload", side_effect=ValueError("TRANSFER_TOO_LARGE: file too big")):
+    with patch(
+        "a2a_mcp_bridge.tools._facade_upload",
+        side_effect=ValueError("TRANSFER_TOO_LARGE: file too big"),
+    ):
         result = tool_agent_send_file(local_store, "alice", "bob", str(src))
 
     assert result["error"]["code"] == "TRANSFER_TOO_LARGE"
@@ -792,8 +795,13 @@ def test_send_file_facade_send_error(
         "locator": {"scheme": "http", "url": "http://bus/transfers/tid-se"},
     }
 
-    with patch("a2a_mcp_bridge.tools._facade_upload", return_value=upload_result), \
-         patch("a2a_mcp_bridge.tools.tool_agent_send", return_value={"error": {"code": "TARGET_NOT_FOUND", "message": "nope"}}):
+    with (
+        patch("a2a_mcp_bridge.tools._facade_upload", return_value=upload_result),
+        patch(
+            "a2a_mcp_bridge.tools.tool_agent_send",
+            return_value={"error": {"code": "TARGET_NOT_FOUND", "message": "nope"}},
+        ),
+    ):
         result = tool_agent_send_file(local_store, "alice", "bob", str(src))
 
     assert result["error"]["code"] == "TARGET_NOT_FOUND"
@@ -849,7 +857,10 @@ def test_send_file_http_store_send_error(
     src = tmp_path / "data.bin"
     src.write_bytes(b"x")
 
-    with patch("a2a_mcp_bridge.tools.tool_agent_send", return_value={"error": {"code": "TARGET_NOT_FOUND", "message": "nope"}}):
+    with patch(
+        "a2a_mcp_bridge.tools.tool_agent_send",
+        return_value={"error": {"code": "TARGET_NOT_FOUND", "message": "nope"}},
+    ):
         result = tool_agent_send_file(mock_store, "alice", "bob", str(src))
 
     assert result["error"]["code"] == "TARGET_NOT_FOUND"
