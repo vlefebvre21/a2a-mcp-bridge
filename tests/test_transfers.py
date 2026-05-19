@@ -6,7 +6,9 @@ from pathlib import Path
 import pytest
 
 
-def test_resolve_transfer_dir_defaults_to_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_resolve_transfer_dir_defaults_to_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.delenv("A2A_TRANSFER_DIR", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
 
@@ -43,7 +45,11 @@ def test_transfer_path_includes_sha_prefix(tmp_path: Path, monkeypatch: pytest.M
     monkeypatch.setenv("A2A_TRANSFER_DIR", str(tmp_path))
     from a2a_mcp_bridge.transfers import transfer_path
 
-    p = transfer_path("11111111-2222-3333-4444-555555555555", "abcdef0123456789" + "0" * 48, "report.md")
+    p = transfer_path(
+        "11111111-2222-3333-4444-555555555555",
+        "abcdef0123456789" + "0" * 48,
+        "report.md",
+    )
     assert p.name == "abcdef0123456789_report.md"
     assert p.parent.name == "11111111-2222-3333-4444-555555555555"
     assert p.parent.parent == tmp_path
@@ -87,12 +93,17 @@ def test_stage_file_rejects_too_large(tmp_path: Path, monkeypatch: pytest.Monkey
         stage_file(src, sender_id="alice", recipient_id="bob", filename="big.bin")
 
 
-def test_stage_file_rejects_source_outside_fs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_stage_file_rejects_source_outside_fs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("A2A_TRANSFER_DIR", str(tmp_path))
     from a2a_mcp_bridge.transfers import stage_file
 
     with pytest.raises(FileNotFoundError):
-        stage_file(tmp_path / "ghost.md", sender_id="alice", recipient_id="bob", filename="ghost.md")
+        stage_file(
+            tmp_path / "ghost.md",
+            sender_id="alice", recipient_id="bob", filename="ghost.md",
+        )
 
 
 def test_stage_file_writes_manifest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -104,7 +115,10 @@ def test_stage_file_writes_manifest(tmp_path: Path, monkeypatch: pytest.MonkeyPa
 
     from a2a_mcp_bridge.transfers import stage_file
 
-    rec = stage_file(src, sender_id="alice", filename="source.md", recipient_id="bob", description="test")
+    rec = stage_file(
+        src, sender_id="alice", filename="source.md",
+        recipient_id="bob", description="test",
+    )
     meta_path = Path(rec.locator_path).parent / "meta.json"
     assert meta_path.is_file()
     meta = json.loads(meta_path.read_text())
