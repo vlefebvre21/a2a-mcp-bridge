@@ -36,7 +36,10 @@ def _make_agent(
                 skill_id=sid,
                 description=desc,
                 domain="code" if "code" in sid else "research",
-                cost=CostModel(tokens_per_call=tokens, latency_ms=800, monetary_cost_usd=tokens * 0.00001),
+                cost=CostModel(
+                    tokens_per_call=tokens, latency_ms=800,
+                    monetary_cost_usd=tokens * 0.00001,
+                ),
             )
             for sid, desc, tokens in skills
         ],
