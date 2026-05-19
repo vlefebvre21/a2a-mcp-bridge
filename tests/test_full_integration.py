@@ -118,7 +118,10 @@ class TestFileTransfers:
         self.transfers_dir = tmp_path / "transfers"
         self.transfers_dir.mkdir()
         # Use monkeypatch for automatic rollback (prevents global state pollution)
-        monkeypatch.setattr("a2a_mcp_bridge.transfers.resolve_transfer_dir", lambda: self.transfers_dir)
+        monkeypatch.setattr(
+            "a2a_mcp_bridge.transfers.resolve_transfer_dir",
+            lambda: self.transfers_dir,
+        )
 
         self.db_store = Store(str(self.db), signal_dir=None)
         self.db_store.init_schema()
