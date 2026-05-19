@@ -121,14 +121,20 @@ def test_migration_adds_intent_column_to_existing_db(tmp_path: Path) -> None:
     # Insert some dummy rows
     conn.execute(
         """
-        INSERT INTO messages (id, sender_id, recipient_id, body, metadata, created_at, read_at, sender_session_id)
-        VALUES ('m1', 'a', 'b', 'old msg1', NULL, '2024-01-01T00:00:00+00:00', NULL, NULL);
+        INSERT INTO messages
+            (id, sender_id, recipient_id, body, metadata, created_at,
+             read_at, sender_session_id)
+        VALUES ('m1', 'a', 'b', 'old msg1', NULL,
+                '2024-01-01T00:00:00+00:00', NULL, NULL);
         """
     )
     conn.execute(
         """
-        INSERT INTO messages (id, sender_id, recipient_id, body, metadata, created_at, read_at, sender_session_id)
-        VALUES ('m2', 'a', 'b', 'old msg2', NULL, '2024-01-02T00:00:00+00:00', NULL, NULL);
+        INSERT INTO messages
+            (id, sender_id, recipient_id, body, metadata, created_at,
+             read_at, sender_session_id)
+        VALUES ('m2', 'a', 'b', 'old msg2', NULL,
+                '2024-01-02T00:00:00+00:00', NULL, NULL);
         """
     )
     conn.execute(
@@ -150,7 +156,8 @@ def test_migration_adds_intent_column_to_existing_db(tmp_path: Path) -> None:
     store = Store(str(db_path))
     store.init_schema()
 
-    # Verify intent column exists (PRAGMA table_info returns tuples: (cid, name, type, notnull, dflt_value, pk))
+    # Verify intent column exists
+    # (PRAGMA table_info returns tuples: (cid, name, type, notnull, dflt_value, pk))
     pragma_cols = {row[1] for row in store._conn.execute("PRAGMA table_info(messages)").fetchall()}
     assert "intent" in pragma_cols
 
@@ -161,7 +168,8 @@ def test_migration_adds_intent_column_to_existing_db(tmp_path: Path) -> None:
     # Verify new send persists custom intent
     store.send_message("a", "b", "new msg", intent="fyi")
     new_row = store._conn.execute(
-        "SELECT intent FROM messages WHERE id = (SELECT id FROM messages ORDER BY created_at DESC LIMIT 1)"
+        "SELECT intent FROM messages "
+        "WHERE id = (SELECT id FROM messages ORDER BY created_at DESC LIMIT 1)"
     ).fetchone()
     assert new_row[0] == "fyi"
 
