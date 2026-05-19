@@ -28,7 +28,8 @@ Additional optional fields when relevant:
 The plain-text format renders the key/value pairs after the logger's own
 prefix, e.g.::
 
-    2026-04-23 09:31:12 INFO a2a_mcp_bridge.tools: agent_send [session=abc123] target=vlbeau-main message_id=ff... duration_ms=8.4
+    2026-04-23 09:31:12 INFO a2a_mcp_bridge.tools: agent_send
+    [session=abc123] target=vlbeau-main message_id=ff... duration_ms=8.4
 
 Design decisions:
 
