@@ -48,7 +48,8 @@ def test_register_rejects_invalid_agent_id(tmp_path: Path) -> None:
 
 
 def test_register_all_reads_hermes_profiles(tmp_path: Path, monkeypatch) -> None:
-    """register --all must discover profiles under a Hermes root and register each as vlbeau-<profile>."""
+    """register --all must discover profiles under a Hermes root
+    and register each as vlbeau-<profile>."""
     hermes_root = tmp_path / ".hermes" / "profiles"
     hermes_root.mkdir(parents=True)
     for name in ["main", "glm51", "qwen36"]:
