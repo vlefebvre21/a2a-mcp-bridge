@@ -122,7 +122,10 @@ def _hash_and_copy(src: Path, dest: Path) -> tuple[str, int]:
     tmp = dest.parent / f".tmp.{dest.name}"
     h = hashlib.sha256()
     size = 0
-    with open(src, "rb") as fin, open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as fout:
+    with (
+        open(src, "rb") as fin,
+        open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as fout,
+    ):
         while True:
             chunk = fin.read(64 * 1024)
             if not chunk:
@@ -195,14 +198,19 @@ def stage_file(
     pending = _count_pending_for_sender(sender_id)
     if pending >= max_pending:
         raise ValueError(
-            f"TRANSFER_QUOTA_EXCEEDED: {pending} pending transfers for {sender_id}, limit {max_pending}"
+            f"TRANSFER_QUOTA_EXCEEDED: {pending} pending transfers "
+            f"for {sender_id}, limit {max_pending}"
         )
 
     tid = new_transfer_id()
     rec_created_at = _time.time()
 
     # TTL clamping: min(ttl, max_ttl), no lower bound (negative = already expired, useful for tests)
-    ttl = expires_in if expires_in is not None else _env_int("A2A_TRANSFER_DEFAULT_TTL_SECONDS", _DEFAULT_TTL_SECONDS)
+    ttl = (
+        expires_in
+        if expires_in is not None
+        else _env_int("A2A_TRANSFER_DEFAULT_TTL_SECONDS", _DEFAULT_TTL_SECONDS)
+    )
     max_ttl = _env_int("A2A_TRANSFER_MAX_TTL_SECONDS", _DEFAULT_MAX_TTL_SECONDS)
     ttl = min(ttl, max_ttl)
     expires_at = rec_created_at + ttl
