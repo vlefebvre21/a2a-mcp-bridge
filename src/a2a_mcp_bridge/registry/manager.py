@@ -78,7 +78,8 @@ class CapabilityRegistry:
                 a
                 for a in agents
                 if any(
-                    cap.cost.monetary_cost_usd is not None and cap.cost.monetary_cost_usd <= max_cost_usd
+                    cap.cost.monetary_cost_usd is not None
+                    and cap.cost.monetary_cost_usd <= max_cost_usd
                     for cap in a.capabilities
                 )
             ]
