@@ -299,7 +299,13 @@ def _migrate_legacy_registry(store: Store, db_path: str) -> None:
         logger.warning("Could not rename legacy registry.db: %s", exc)
 
 
-def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None, bus_url: str | None = None, bus_api_key: str | None = None) -> FastMCP:
+def build_server(
+    agent_id: str,
+    db_path: str,
+    signal_dir_path: str | None = None,
+    bus_url: str | None = None,
+    bus_api_key: str | None = None,
+) -> FastMCP:
     if bus_url:
         # ADR-006 Step 1: remote bus via HTTP façade.
         # Import here to avoid hard dep on httpx at the top level.
@@ -650,10 +656,18 @@ def build_server(agent_id: str, db_path: str, signal_dir_path: str | None = None
                 skill_id=cap.skill_id,
                 domain=cap.domain or "general",
                 description=cap.description,
-                monetary_cost_usd=getattr(cost_obj, "monetary_cost_usd", None) if cost_obj else None,
+                monetary_cost_usd=(
+                    getattr(cost_obj, "monetary_cost_usd", None)
+                    if cost_obj
+                    else None
+                ),
                 tokens_per_call=getattr(cost_obj, "tokens_per_call", 0) if cost_obj else 0,
             )
-        return {"status": "ok", "agent_id": agent.agent_id, "capabilities_registered": len(agent.capabilities)}
+        return {
+            "status": "ok",
+            "agent_id": agent.agent_id,
+            "capabilities_registered": len(agent.capabilities),
+        }
 
     @mcp.tool()
     def capability_discover() -> dict[str, Any]:
