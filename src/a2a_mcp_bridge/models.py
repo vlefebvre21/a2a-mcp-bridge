@@ -76,13 +76,23 @@ class Message(BaseModel):
 
 
 class AgentRecord(BaseModel):
-    """Registry entry for an agent profile."""
+    """Registry entry for an agent profile.
+
+    .. note:: ``online`` defaults to ``False`` (v0.10.2+). Previously the field
+        was required — callers that omitted ``online`` would get a
+        ``ValidationError``. The default was introduced because liveness is
+        always decided at the server layer (see ``Store.list_agents`` and
+        ``HttpBusStore``), so requiring the caller to pass ``online=False``
+        was redundant. This is a **breaking change** for code that relied on
+        the field being mandatory to catch construction errors, but no such
+        code path existed in the bridge itself.
+    """
     model_config = ConfigDict(frozen=True)
 
     agent_id: str
     first_seen_at: datetime
     last_seen_at: datetime
-    online: bool = False
+    online: bool = False  # Default since v0.10.2 — liveness is server-layer concern
     metadata: dict[str, Any] | None = Field(default=None)  # Strict type
 
     @field_validator("agent_id")
