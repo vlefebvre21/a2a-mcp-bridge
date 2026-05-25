@@ -11,6 +11,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from tenacity import retry, stop_after_attempt, wait_exponential
+
 from .intents import DEFAULT_INTENT
 from .models import (
     MAX_BODY_BYTES,
@@ -151,6 +153,15 @@ class Store:
 
     _KNOWN_TABLES: frozenset[str] = frozenset({"agents", "messages"})
 
+    # Retry schema migrations under concurrent SQLite access (ADR-001 multi-session).
+    # When two Hermes profiles start simultaneously, both may race to ALTER TABLE
+    # the same column; the loser gets OperationalError("database is locked").
+    # tenacity retries with exponential backoff so the loser eventually succeeds.
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=0.1, min=0.1, max=2),
+        reraise=True,
+    )
     def _add_column_if_missing(
         self,
         *,

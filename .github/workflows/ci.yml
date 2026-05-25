@@ -8,23 +8,50 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    name: Test (Py${{ matrix.python }} on ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        os: [ubuntu-latest, macos-14]  # macOS arm64 (M1/M2) + Ubuntu x64
+        python: ["3.11", "3.12", "3.13"]
+        include:
+          - os: macos-14
+            python: "3.12"
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Python ${{ matrix.python-version }}
+        with:
+          fetch-depth: 1  # Shallow checkout sufficient for unit tests
+      
+      - name: Set up Python ${{ matrix.python }}
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: ${{ matrix.python }}
+          cache: 'pip'
+      
       - name: Install uv
-        run: pip install uv
-      - name: Install deps
+        run: pip install --upgrade uv
+      
+      - name: Install dependencies
         run: uv pip install --system -e ".[dev,facade,remote]"
-      - name: Ruff
+      
+      - name: Ruff (Lint + formatting check)
         run: ruff check src/ tests/
-      - name: Mypy
+      
+      - name: Mypy (Type checking strict)
         run: mypy src/
-      - name: Tests
-        run: pytest --cov=a2a_mcp_bridge --cov-report=term-missing --cov-fail-under=85
+      
+      - name: Tests with Coverage
+        run: |
+          pytest --cov=a2a_mcp_bridge \
+                 --cov-branch \
+                 --cov-report=xml:coverage.xml \
+                 --cov-report=term-missing \
+                 --cov-fail-under=85  # 85% minimum — matches pyproject.toml
+      
+      - name: Upload Coverage to Codecov (optional)
+        uses: codecov/codecov-action@v3
+        with:
+          files: ./coverage.xml
+          fail_ci_if_error: false
+          flags: ${{ matrix.os }}-${{ matrix.python }}
