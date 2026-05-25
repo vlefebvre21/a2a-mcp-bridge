@@ -4,6 +4,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.2] — 2026-05-25
+
+### Breaking
+
+- **`AgentRecord.online` now defaults to `False`** — previously a required
+  field, `online` now has `bool = False` as its default. Callers that relied
+  on the field being mandatory must handle the implicit default. Documented
+  inline on the model class (PR #66).
+
+### Added
+
+- **Structured JSON logging** (`logging_ext.py`) — new module with
+  `StructuredFormatter` and `_STRUCTURED_FIELDS` tuple (14 fields). Replaces
+  13 individual `hasattr` blocks with a loop, plus `_log_structured()`
+  convenience function (PR #65).
+- **`IntentLiteral` type** — `Message.intent` is now typed as
+  `Literal["triage","execute","review","question","fyi"]` with a strict
+  Pydantic validator. Unknown values downgrade to `"triage"` with a WARNING
+  log, matching existing `normalize_intent` semantics (PR #65).
+- **`test_online_defaults_to_false`** — regression test capturing the
+  v0.10.2 `AgentRecord.online` default behaviour (PR #66).
+
+### Changed
+
+- **`AgentRecord.metadata`** typed as `dict[str, Any] | None =
+  Field(default=None)` — was previously untyped/required (PR #65).
+- **CI cleanup** — removed unused `pytest-split` and `COVERAGE_RCFILE`,
+  `fetch-depth` 2→1 (no diff needed), coverage gate 82→85 (restored),
+  fixed misleading M5 Max comment (PR #65).
+- **Test timeout** for `test_store_edge_cases.py` increased 10→15 s with
+  comment explaining macOS arm64 CI slowness (PR #65).
+
+### Fixed
+
+- **`_add_column_if_missing` race condition** — concurrent Hermes profiles
+  (ADR-001 multi-session) racing `ALTER TABLE` could cause intermittent
+  failures. Now retries up to 3 times with exponential backoff via
+  `tenacity` (`@retry(stop_after_attempt(3), wait_exponential(...),
+  reraise=True)`) (PR #65).
+
 ## [0.10.0] — 2026-05-19
 
 ### Breaking
