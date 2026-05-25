@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -12,6 +12,9 @@ AGENT_ID_PATTERN: re.Pattern[str] = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 MAX_BODY_BYTES: int = 64 * 1024
 MAX_METADATA_BYTES: int = 4 * 1024
 MAX_SESSION_ID_BYTES: int = 128
+
+# Valid intents (ADR-002)
+IntentLiteral = Literal["triage", "execute", "review", "question", "fyi"]
 
 
 class AgentId:
@@ -27,45 +30,85 @@ class AgentId:
 
 
 class Message(BaseModel):
+    """A message on the A2A bus.
+
+    Type safety:
+      - ``metadata`` is strictly `dict[str, Any] | None`, rejects lists/strings.
+      - ``intent`` is strictly one of the ADR-002 enum values (Literal).
+    """
     model_config = ConfigDict(frozen=True)
 
     id: str
     sender_id: str
     recipient_id: str
     body: str = Field(max_length=MAX_BODY_BYTES)
-    metadata: dict[str, Any] | None = None
+    metadata: dict[str, Any] | None = Field(default=None)  # Strict type
     created_at: datetime
     read_at: datetime | None = None
     sender_session_id: str | None = None
-    intent: str = "triage"
+    intent: IntentLiteral = "triage"  # Strict Literal type (ADR-002)
 
     @field_validator("sender_id", "recipient_id")
     @classmethod
     def _validate_agent_id(cls, v: str) -> str:
         return AgentId.validate(v)
 
+    @field_validator("metadata")
+    @classmethod
+    def _validate_metadata(cls, v: Any) -> dict[str, Any] | None:
+        """Ensure metadata is strictly a dict or None (not list, str, etc.)."""
+        if v is not None and isinstance(v, dict):
+            return v
+        elif v is None:
+            return None
+        raise ValueError(f"metadata must be dict or None, got {type(v).__name__}")
+
+    @field_validator("intent", mode="before")
+    @classmethod
+    def _validate_intent(cls, v: Any) -> IntentLiteral:
+        """Validate intent is one of the allowed ADR-002 values, default 'triage'."""
+        if isinstance(v, str):
+            valid = {"triage", "execute", "review", "question", "fyi"}
+            if v in valid:
+                return v  # type: ignore[return-value]
+        # Default pour backward compat (ancien DB sans intent)
+        return "triage"
+
 
 class AgentRecord(BaseModel):
+    """Registry entry for an agent profile."""
     model_config = ConfigDict(frozen=True)
 
     agent_id: str
     first_seen_at: datetime
     last_seen_at: datetime
-    online: bool
-    metadata: dict[str, Any] | None = None
+    online: bool = False
+    metadata: dict[str, Any] | None = Field(default=None)  # Strict type
 
     @field_validator("agent_id")
     @classmethod
     def _validate_agent_id(cls, v: str) -> str:
         return AgentId.validate(v)
 
+    @field_validator("metadata")
+    @classmethod
+    def _validate_metadata(cls, v: Any) -> dict[str, Any] | None:
+        """Ensure metadata is strictly a dict or None."""
+        if v is not None and isinstance(v, dict):
+            return v
+        elif v is None:
+            return None
+        raise ValueError(f"metadata must be dict or None, got {type(v).__name__}")
+
 
 class SendResult(BaseModel):
+    """Result of a send operation."""
     model_config = ConfigDict(frozen=True)
 
     message_id: str
     sent_at: datetime
     recipient: str
+    intent: IntentLiteral = "triage"  # Strict Literal type (ADR-002)
 
     @field_validator("recipient")
     @classmethod
