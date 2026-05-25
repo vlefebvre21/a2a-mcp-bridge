@@ -66,6 +66,22 @@ class TestAgentRecord:
         assert rec.online is True
         assert rec.metadata == {"capabilities": ["chat"]}
 
+    def test_online_defaults_to_false(self):
+        """v0.10.2 breaking change: online is now optional with default False.
+
+        Previously, omitting ``online`` would raise ValidationError. Now it
+        silently defaults to False — liveness is always decided at the server
+        layer, not at construction time.
+        """
+        now = datetime.now(UTC)
+        rec = AgentRecord(
+            agent_id="a",
+            first_seen_at=now,
+            last_seen_at=now,
+        )
+        assert rec.online is False
+        assert rec.metadata is None
+
 
 class TestSendResult:
     def test_valid(self):
