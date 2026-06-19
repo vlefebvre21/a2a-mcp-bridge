@@ -692,7 +692,7 @@ def build_server(
         from pydantic import ValidationError
 
         from .exceptions import MCPValidationError
-        from .registry.models import AgentInfo
+        from .models import AgentInfo
 
         validate_tool_params(
             tool="capability_announce",

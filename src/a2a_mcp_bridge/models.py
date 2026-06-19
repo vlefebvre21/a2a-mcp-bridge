@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -132,3 +132,44 @@ class SendResult(BaseModel):
     @classmethod
     def _validate_recipient(cls, v: str) -> str:
         return AgentId.validate(v)
+
+
+class CostModel(BaseModel):
+    """Cost and performance model for a capability."""
+
+    tokens_per_call: float = Field(..., description="Estimated tokens per typical call")
+    latency_ms: int = Field(..., description="Average latency in milliseconds")
+    monetary_cost_usd: float | None = Field(None, description="Monetary cost if applicable")
+    type: Literal["local", "api", "hybrid"] = "local"
+
+
+class Capability(BaseModel):
+    """Represents one specialized skill announced by a Hermes agent."""
+
+    skill_id: str = Field(..., description="Unique skill identifier, e.g. 'code-review-python'")
+    description: str = Field(..., description="Human readable description")
+    parameters_schema: dict[str, Any] = Field(default_factory=dict)
+    return_schema: dict[str, Any] = Field(default_factory=dict)
+    domain: str = Field(..., description="Domain like 'code', 'research', 'media'")
+    cost: CostModel
+    supports_streaming: bool = False
+    max_context_tokens: int | None = None
+    permissions: list[str] = Field(default_factory=lambda: ["read"])
+    version: str = "1.0.0"
+
+
+class AgentInfo(BaseModel):
+    """Full information about a registered Hermes agent.
+
+    ``agent_id`` is the unique key on the bus. ``name`` is purely
+    presentational — two agents may share the same display name
+    (e.g. "Python Specialist") as long as their ``agent_id`` values
+    differ. The bus never enforces name uniqueness.
+    """
+
+    agent_id: str
+    name: str
+    capabilities: list[Capability] = Field(default_factory=list)
+    status: Literal["online", "offline", "degraded"] = "online"
+    last_heartbeat: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    metadata: dict[str, Any] = Field(default_factory=dict)
