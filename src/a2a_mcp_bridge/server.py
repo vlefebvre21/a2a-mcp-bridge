@@ -715,7 +715,7 @@ def build_server(
             skill: Keyword to match against skill_id or description.
             max_tokens: Optional token-cost ceiling for scoring.
         """
-        results = store.get_capabilities(keyword=skill)
+        results = store.get_capabilities(keyword=skill, max_tokens=max_tokens)
         return {
             "status": "success",
             "query": skill,
