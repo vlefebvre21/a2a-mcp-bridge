@@ -367,9 +367,9 @@ def create_app(
     # File transfer endpoints
     # -------------------------------------------------------
 
-    max_ttl_hours = _env_int("A2A_TRANSFER_MAX_TTL_HOURS", 168)
-    max_pending = _env_int("A2A_TRANSFER_MAX_PENDING", 50)
-    max_size_bytes = _env_int("A2A_TRANSFER_MAX_SIZE_MB", 100) * 1024 * 1024
+    max_ttl_seconds = _env_int("A2A_TRANSFER_MAX_TTL_SECONDS", 604_800)
+    max_pending = _env_int("A2A_TRANSFER_MAX_PENDING_PER_AGENT", 50)
+    max_size_bytes = _env_int("A2A_TRANSFER_MAX_SIZE_BYTES", 100 * 1024 * 1024)
 
     @app.post("/transfers/upload")
     async def transfer_upload(
@@ -381,12 +381,12 @@ def create_app(
     ) -> JSONResponse:
         _check_auth(request, api_key)
 
-        if ttl_hours > max_ttl_hours:
+        if ttl_hours * 3600 > max_ttl_seconds:
             return JSONResponse(
                 {
                     "error": {
                         "code": "TTL_EXCEEDED",
-                        "message": f"ttl_hours exceeds maximum ({max_ttl_hours})",
+                        "message": f"ttl_hours exceeds maximum ({max_ttl_seconds // 3600} hours)",
                     }
                 },
                 status_code=400,
