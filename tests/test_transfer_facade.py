@@ -190,8 +190,8 @@ class TestTransferEndpoints:
     def test_file_too_large(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        # A2A_TRANSFER_MAX_SIZE_MB=0 → max_size_bytes = 0; any content exceeds it.
-        client = _make_client(tmp_path, monkeypatch, A2A_TRANSFER_MAX_SIZE_MB="0")
+        # A2A_TRANSFER_MAX_SIZE_BYTES=0 → any content exceeds it.
+        client = _make_client(tmp_path, monkeypatch, A2A_TRANSFER_MAX_SIZE_BYTES="0")
 
         resp = _upload(client, content=b"x")
 
@@ -204,7 +204,7 @@ class TestTransferEndpoints:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         client = _make_client(
-            tmp_path, monkeypatch, A2A_TRANSFER_MAX_PENDING="1",
+            tmp_path, monkeypatch, A2A_TRANSFER_MAX_PENDING_PER_AGENT="1",
         )
 
         # First upload succeeds.
@@ -221,9 +221,9 @@ class TestTransferEndpoints:
     def test_ttl_exceeded(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        # Set max TTL to 1 hour, then request 999 hours.
+        # Set max TTL to 1 hour (3600 seconds), then request 999 hours.
         client = _make_client(
-            tmp_path, monkeypatch, A2A_TRANSFER_MAX_TTL_HOURS="1",
+            tmp_path, monkeypatch, A2A_TRANSFER_MAX_TTL_SECONDS="3600",
         )
 
         resp = _upload(client, ttl_hours=999)
