@@ -86,3 +86,73 @@ class TestMessaging:
             store.send_message("alice", "bob", f"msg {i}")
         inbox = store.read_inbox("bob", limit=3, unread_only=True)
         assert len(inbox) == 3
+
+
+class TestPurgeOldMessages:
+    """Tests for Store.purge_old_messages."""
+
+    def _insert_old_msg(
+        self,
+        store: Store,
+        msg_id: str,
+        *,
+        created_at: str = "2024-01-01T00:00:00+00:00",
+        read_at: str | None = "2024-01-01T01:00:00+00:00",
+    ) -> None:
+        """Insert a message with an explicit (old) timestamp via raw SQL."""
+        store._conn.execute(
+            "INSERT INTO messages (id, sender_id, recipient_id, body, "
+            "metadata, created_at, read_at, sender_session_id, intent) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (msg_id, "alice", "bob", "old msg", "{}", created_at, read_at, None, "triage"),
+        )
+
+    def test_purge_old_messages_deletes_by_age(self, store: Store) -> None:
+        store.upsert_agent("alice")
+        store.upsert_agent("bob")
+
+        # Old message (2024) — should be deleted
+        self._insert_old_msg(store, "m_old")
+        # Recent message (now) — should survive
+        store.send_message("alice", "bob", "recent msg")
+
+        deleted = store.purge_old_messages(older_than_days=30)
+        assert deleted == 1
+
+        # Verify the old one is gone and the recent one survives
+        remaining = store._conn.execute("SELECT id FROM messages").fetchall()
+        ids = {r["id"] for r in remaining}
+        assert len(remaining) == 1  # only the recent message
+
+    def test_purge_old_messages_unread_only_preserves_unread(self, store: Store) -> None:
+        store.upsert_agent("alice")
+        store.upsert_agent("bob")
+
+        # Old + read (read_at set) — should be deleted
+        self._insert_old_msg(store, "m_read", read_at="2024-01-01T01:00:00+00:00")
+        # Old + unread (read_at NULL) — should survive even though old
+        self._insert_old_msg(store, "m_unread", read_at=None)
+
+        deleted = store.purge_old_messages(older_than_days=30, unread_only=True)
+        assert deleted == 1
+
+        remaining = store._conn.execute("SELECT id FROM messages").fetchall()
+        ids = {r["id"] for r in remaining}
+        assert "m_unread" in ids
+        assert "m_read" not in ids
+
+    def test_purge_old_messages_rejects_invalid_days(self, store: Store) -> None:
+        with pytest.raises(ValueError, match="older_than_days must be >= 1"):
+            store.purge_old_messages(older_than_days=0)
+
+    def test_purge_old_messages_returns_count(self, store: Store) -> None:
+        store.upsert_agent("alice")
+        store.upsert_agent("bob")
+
+        # Insert 3 old messages
+        self._insert_old_msg(store, "m1")
+        self._insert_old_msg(store, "m2")
+        self._insert_old_msg(store, "m3")
+
+        deleted = store.purge_old_messages(older_than_days=30)
+        assert deleted == 3

@@ -72,3 +72,42 @@ def test_help_shows_commands() -> None:
     assert "serve" in result.stdout
     assert "agents" in result.stdout
     assert "messages" in result.stdout
+
+
+def test_messages_purge_dry_run(tmp_path: Path) -> None:
+    db = tmp_path / "bus.sqlite"
+    store = Store(str(db))
+    store.init_schema()
+    store.upsert_agent("alice")
+    store.upsert_agent("bob")
+
+    # Insert old messages via raw SQL (2024 timestamps)
+    for i in range(3):
+        store._conn.execute(
+            "INSERT INTO messages (id, sender_id, recipient_id, body, "
+            "metadata, created_at, read_at, sender_session_id, intent) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                f"old_{i}", "alice", "bob", "old msg",
+                "{}", "2024-01-01T00:00:00+00:00",
+                "2024-01-01T01:00:00+00:00", None, "triage",
+            ),
+        )
+    # Insert a recent message that should NOT be counted
+    store.send_message("alice", "bob", "recent msg")
+    store.close()
+
+    result = runner.invoke(
+        app,
+        ["messages", "purge", "--db", str(db), "--dry-run", "--older-than-days", "30"],
+    )
+    assert result.exit_code == 0
+    assert "DRY RUN" in result.stdout
+    assert "3" in result.stdout  # 3 old messages would be deleted
+
+    # Verify nothing was actually deleted
+    store2 = Store(str(db))
+    store2.init_schema()
+    count = store2._conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+    assert count == 4  # 3 old + 1 recent
+    store2.close()
