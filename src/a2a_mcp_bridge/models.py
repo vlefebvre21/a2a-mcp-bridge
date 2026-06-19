@@ -8,6 +8,8 @@ from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from a2a_mcp_bridge.intents import DEFAULT_INTENT
+
 AGENT_ID_PATTERN: re.Pattern[str] = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 MAX_BODY_BYTES: int = 64 * 1024
 MAX_METADATA_BYTES: int = 4 * 1024
@@ -66,13 +68,19 @@ class Message(BaseModel):
     @field_validator("intent", mode="before")
     @classmethod
     def _validate_intent(cls, v: Any) -> IntentLiteral:
-        """Validate intent is one of the allowed ADR-002 values, default 'triage'."""
+        """Validate intent is one of the allowed ADR-002 values.
+
+        Unknown values downgrade to ``DEFAULT_INTENT`` (from ``intents.py``),
+        matching ``normalize_intent`` behaviour — not a hardcoded fallback.
+        The Pydantic field default ``"triage"`` (line above) is separate and
+        only applies when the field is omitted entirely (backward-compat for
+        old DB rows without an intent column).
+        """
         if isinstance(v, str):
             valid = {"triage", "execute", "review", "question", "fyi"}
             if v in valid:
                 return v  # type: ignore[return-value]
-        # Default pour backward compat (ancien DB sans intent)
-        return "triage"
+        return DEFAULT_INTENT  # type: ignore[return-value]
 
 
 class AgentRecord(BaseModel):
