@@ -174,6 +174,26 @@ class TestC04FilePermissions:
         assert payload_mode == 0o600, f"payload {oct(payload_mode)}"
         assert manifest_mode == 0o600, f"manifest {oct(manifest_mode)}"
 
+    def test_bus_sqlite_file_is_0600(self, tmp_path: Path) -> None:
+        """The bus SQLite file must be 0600 to prevent world-readable messages."""
+        import stat
+
+        db_path = tmp_path / "bus.sqlite"
+        store = Store(str(db_path))
+        store.init_schema()
+        # Force WAL sidecar creation by writing
+        store.upsert_agent("test-agent")
+        mode = stat.S_IMODE(os.stat(str(db_path)).st_mode)
+        assert mode == 0o600, f"bus SQLite perms are {oct(mode)}, expected 0600"
+        # Check sidecars
+        for suffix in ("-wal", "-shm"):
+            sidecar = db_path.with_name(db_path.name + suffix)
+            if sidecar.exists():
+                sidecar_mode = stat.S_IMODE(os.stat(str(sidecar)).st_mode)
+                assert sidecar_mode == 0o600, (
+                    f"sidecar {suffix} perms are {oct(sidecar_mode)}, expected 0600"
+                )
+
 
 # ---------------------------------------------------------------------------
 # C-003 — SQL column_type validation (defense-in-depth for ALTER TABLE)
