@@ -411,3 +411,27 @@ def test_capability_ping_wrapper_records_heartbeat(tmp_path: Path) -> None:
     result = ping(agent_id="alice")
 
     assert result == {"status": "ok", "agent_id": "alice"}
+
+
+def test_build_server_starts_sweep_thread(tmp_path: Path) -> None:
+    """build_server with local Store must start a daemon transfer sweep thread."""
+    import threading
+    before = sum(1 for t in threading.enumerate() if t.name == "a2a-transfer-sweep")
+    db = tmp_path / "bus.sqlite"
+    server_module.build_server(agent_id="test-agent", db_path=str(db))
+    after = [t for t in threading.enumerate() if t.name == "a2a-transfer-sweep"]
+    assert len(after) - before == 1
+    # The newly created thread must be a daemon.
+    assert after[-1].daemon is True
+
+def test_build_server_skips_sweep_when_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """build_server must not start a sweep thread when A2A_TRANSFER_SWEEP_ENABLED=0."""
+    import threading
+    monkeypatch.setenv("A2A_TRANSFER_SWEEP_ENABLED", "0")
+    before = sum(1 for t in threading.enumerate() if t.name == "a2a-transfer-sweep")
+    db = tmp_path / "bus.sqlite"
+    server_module.build_server(agent_id="test-agent", db_path=str(db))
+    after = sum(1 for t in threading.enumerate() if t.name == "a2a-transfer-sweep")
+    assert after == before
