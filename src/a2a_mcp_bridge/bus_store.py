@@ -140,6 +140,7 @@ class BusStore(Protocol):
         self,
         keyword: str = "",
         max_cost_usd: float | None = None,
+        max_tokens: int | None = None,
     ) -> list[dict[str, Any]]:
         """Query capabilities by keyword and/or cost ceiling."""
         ...
@@ -569,6 +570,7 @@ class HttpBusStore:
         self,
         keyword: str = "",
         max_cost_usd: float | None = None,
+        max_tokens: int | None = None,
     ) -> list[dict[str, Any]]:
         """Query capabilities via HTTP façade."""
         params: dict[str, Any] = {}
@@ -576,6 +578,8 @@ class HttpBusStore:
             params["keyword"] = keyword
         if max_cost_usd is not None:
             params["max_cost_usd"] = max_cost_usd
+        if max_tokens is not None:
+            params["max_tokens"] = max_tokens
         try:
             resp = self._client.post(
                 self._url("/capability-list"),

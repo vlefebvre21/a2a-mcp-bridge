@@ -60,7 +60,7 @@ class Message(BaseModel):
     def _validate_metadata(cls, v: Any) -> dict[str, Any] | None:
         """Ensure metadata is strictly a dict or None (not list, str, etc.)."""
         if v is not None and isinstance(v, dict):
-            return v
+            return v  # type: ignore[no-any-return]
         elif v is None:
             return None
         raise ValueError(f"metadata must be dict or None, got {type(v).__name__}")
@@ -113,7 +113,7 @@ class AgentRecord(BaseModel):
     def _validate_metadata(cls, v: Any) -> dict[str, Any] | None:
         """Ensure metadata is strictly a dict or None."""
         if v is not None and isinstance(v, dict):
-            return v
+            return v  # type: ignore[no-any-return]
         elif v is None:
             return None
         raise ValueError(f"metadata must be dict or None, got {type(v).__name__}")

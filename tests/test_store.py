@@ -121,7 +121,6 @@ class TestPurgeOldMessages:
 
         # Verify the old one is gone and the recent one survives
         remaining = store._conn.execute("SELECT id FROM messages").fetchall()
-        ids = {r["id"] for r in remaining}
         assert len(remaining) == 1  # only the recent message
 
     def test_purge_old_messages_unread_only_preserves_unread(self, store: Store) -> None:
