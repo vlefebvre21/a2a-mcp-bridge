@@ -181,7 +181,8 @@ def test_connection_timeout_raises_instead_of_blocking_forever(
         with pytest.raises(sqlite3.OperationalError, match="database is locked"):
             store.send_message("alice", "bob", "should-timeout")
         elapsed = time.monotonic() - start
-        # timeout=5 → SQLite may need up to ~12s on slow CI (macOS arm64) to surface the lock error; 15s gives headroom.
+        # timeout=5 → SQLite may need up to ~12s on slow CI (macOS arm64)
+        # to surface the lock error; 15s gives headroom.
         assert elapsed < 15, f"send_message blocked {elapsed:.1f}s (timeout not applied)"
     finally:
         with contextlib.suppress(sqlite3.OperationalError):

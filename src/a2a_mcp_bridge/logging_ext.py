@@ -131,7 +131,7 @@ def get_json_formatter() -> logging.Formatter:
 
     This is suitable for ingestion by Datadog, Logstash, or Splunk.
     """
-    _STRUCTURED_FIELDS = (
+    _STRUCTURED_FIELDS = (  # noqa: N806
         "event", "agent_id", "session_id", "message_id", "target",
         "duration_ms", "error_code", "body_hash", "count",
         "since_ts", "unread_only", "intent", "requested_intent",

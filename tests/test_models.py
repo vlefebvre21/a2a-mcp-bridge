@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
+from a2a_mcp_bridge.intents import DEFAULT_INTENT, normalize_intent
 from a2a_mcp_bridge.models import (
     MAX_BODY_BYTES,
     AgentId,
@@ -10,8 +11,6 @@ from a2a_mcp_bridge.models import (
     Message,
     SendResult,
 )
-
-from a2a_mcp_bridge.intents import DEFAULT_INTENT, normalize_intent
 
 
 class TestAgentId:

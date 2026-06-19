@@ -7,6 +7,7 @@ import os
 import re
 import sqlite3
 from contextlib import suppress
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
@@ -296,9 +297,9 @@ def messages_purge(
 
     if dry_run:
         # Count matching messages without deleting
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
         # Use the same SQL logic as purge but SELECT COUNT(*) instead
-        cutoff = datetime.now(timezone.utc) - timedelta(days=older_than_days)
+        cutoff = datetime.now(UTC) - timedelta(days=older_than_days)
         conn = store._conn
         conditions = ["created_at < ?"]
         params: list[Any] = [cutoff.isoformat()]
