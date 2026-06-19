@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import sqlite3
 import uuid
@@ -107,6 +108,18 @@ class Store:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.execute("PRAGMA journal_mode = WAL")
+        # C-04b: harden bus SQLite perms to 0600 — by default sqlite3.connect()
+        # creates the file with umask (typically 0644 on Linux), which lets any
+        # local user read all agent messages. Force 0600 so only the owner can
+        # read/write. WAL sidecars (-wal, -shm) inherit from the main file but
+        # we chmod them explicitly for thoroughness.
+        db_path_obj = Path(db_path)
+        if db_path_obj.exists():
+            os.chmod(db_path_obj, 0o600)
+            for suffix in ("-wal", "-shm"):
+                sidecar = db_path_obj.with_name(db_path_obj.name + suffix)
+                if sidecar.exists():
+                    os.chmod(sidecar, 0o600)
 
     def init_schema(self) -> None:
         self._conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
@@ -461,6 +474,42 @@ class Store:
 
         return [self._row_to_message(r) for r in rows]
 
+    def purge_old_messages(
+        self,
+        older_than_days: int = 90,
+        *,
+        unread_only: bool = False,
+    ) -> int:
+        """Delete messages older than ``older_than_days`` days.
+
+        Args:
+            older_than_days: Delete messages whose ``created_at`` is older
+                than this many days. Must be >= 1.
+            unread_only: If ``True``, only delete messages that have been
+                read (``read_at IS NOT NULL``). Unread messages are preserved
+                regardless of age — they may still be pending triage.
+                If ``False`` (default), delete all matching messages
+                including unread ones.
+
+        Returns:
+            Number of rows deleted.
+        """
+        if older_than_days < 1:
+            raise ValueError("older_than_days must be >= 1")
+
+        # SQLite datetime() operates on TEXT ISO-8601 timestamps.
+        # 'now' is UTC; '-N days' produces the cutoff. We compare against
+        # created_at (not read_at) so age is measured from send time.
+        conditions = ["created_at < datetime('now', ?)"]
+        params: list[Any] = [f"-{older_than_days} days"]
+
+        if unread_only:
+            conditions.append("read_at IS NOT NULL")
+
+        sql = f"DELETE FROM messages WHERE {' AND '.join(conditions)}"
+        cursor = self._conn.execute(sql, params)
+        return cursor.rowcount
+
     def peek_inbox(
         self,
         agent_id: str,
@@ -595,8 +644,17 @@ class Store:
         self,
         keyword: str = "",
         max_cost_usd: float | None = None,
+        max_tokens: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Query capabilities by keyword and/or cost ceiling."""
+        """Query capabilities by keyword and/or cost ceiling.
+
+        Args:
+            keyword: Substring match on skill_id, domain, or description.
+            max_cost_usd: Filter to capabilities with monetary_cost_usd
+                <= this value (NULL costs always pass).
+            max_tokens: Filter to capabilities with tokens_per_call
+                <= this value.
+        """
         sql = (
             "SELECT agent_id, skill_id, domain, description, "
             "monetary_cost_usd, tokens_per_call, announced_at "
@@ -613,6 +671,10 @@ class Store:
         if max_cost_usd is not None:
             conditions.append("(monetary_cost_usd IS NULL OR monetary_cost_usd <= ?)")
             params.append(max_cost_usd)
+
+        if max_tokens is not None:
+            conditions.append("tokens_per_call <= ?")
+            params.append(max_tokens)
 
         if conditions:
             sql += " WHERE " + " AND ".join(conditions)

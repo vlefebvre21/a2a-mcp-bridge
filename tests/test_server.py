@@ -373,6 +373,35 @@ def test_capability_find_best_wrapper_returns_matches(tmp_path: Path) -> None:
     assert result["count"] == 1
 
 
+def test_capability_find_best_filters_by_max_tokens(tmp_path: Path) -> None:
+    """capability_find_best must filter results by the max_tokens ceiling."""
+    db = tmp_path / "bus.sqlite"
+    mcp = server_module.build_server(agent_id="alice", db_path=str(db))
+    announce = _get_tool_fn(mcp, "capability_announce")
+    find_best = _get_tool_fn(mcp, "capability_find_best")
+
+    # Agent with tokens_per_call = 1000
+    payload_low = _valid_agent_payload("alice", "python")
+    announce(**payload_low)
+
+    # Agent with tokens_per_call = 5000
+    payload_high = _valid_agent_payload("bob", "python")
+    payload_high["capabilities"][0]["cost"]["tokens_per_call"] = 5000
+    announce(**payload_high)
+
+    # No filter → both agents
+    result_all = find_best(skill="python")
+    assert result_all["count"] == 2
+
+    # max_tokens=2000 → only the 1000-token agent passes
+    result_mid = find_best(skill="python", max_tokens=2000)
+    assert result_mid["count"] == 1
+
+    # max_tokens=500 → nobody passes
+    result_low = find_best(skill="python", max_tokens=500)
+    assert result_low["count"] == 0
+
+
 def test_capability_ping_wrapper_records_heartbeat(tmp_path: Path) -> None:
     """capability_ping must touch the agent's last_seen_at via store.upsert_agent."""
     db = tmp_path / "bus.sqlite"
@@ -382,3 +411,27 @@ def test_capability_ping_wrapper_records_heartbeat(tmp_path: Path) -> None:
     result = ping(agent_id="alice")
 
     assert result == {"status": "ok", "agent_id": "alice"}
+
+
+def test_build_server_starts_sweep_thread(tmp_path: Path) -> None:
+    """build_server with local Store must start a daemon transfer sweep thread."""
+    import threading
+    before = sum(1 for t in threading.enumerate() if t.name == "a2a-transfer-sweep")
+    db = tmp_path / "bus.sqlite"
+    server_module.build_server(agent_id="test-agent", db_path=str(db))
+    after = [t for t in threading.enumerate() if t.name == "a2a-transfer-sweep"]
+    assert len(after) - before == 1
+    # The newly created thread must be a daemon.
+    assert after[-1].daemon is True
+
+def test_build_server_skips_sweep_when_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """build_server must not start a sweep thread when A2A_TRANSFER_SWEEP_ENABLED=0."""
+    import threading
+    monkeypatch.setenv("A2A_TRANSFER_SWEEP_ENABLED", "0")
+    before = sum(1 for t in threading.enumerate() if t.name == "a2a-transfer-sweep")
+    db = tmp_path / "bus.sqlite"
+    server_module.build_server(agent_id="test-agent", db_path=str(db))
+    after = sum(1 for t in threading.enumerate() if t.name == "a2a-transfer-sweep")
+    assert after == before

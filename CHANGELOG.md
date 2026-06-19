@@ -4,6 +4,72 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] — 2026-06-19
+
+### Breaking
+
+- **`registry/` package removed** — the dead `CapabilityRegistry`,
+  `RegistryQuery`, `HeartbeatManager`, and `RegistryStorage` classes
+  (unwired since v0.9.0 ADR-008) are deleted. The CLI subcommands
+  `registry discover`, `registry list-agents`, and `registry find-best`
+  are removed. `AgentInfo`, `Capability`, and `CostModel` now live in
+  `models.py` (B7). `_migrate_legacy_registry` in `server.py` is kept
+  for upgraders from v0.8.
+- **Phase C transfer env vars renamed** — the façade HTTP endpoints now
+  read the same env var names as Phase A (local staging):
+  `A2A_TRANSFER_MAX_SIZE_MB` → `A2A_TRANSFER_MAX_SIZE_BYTES`,
+  `A2A_TRANSFER_MAX_PENDING` → `A2A_TRANSFER_MAX_PENDING_PER_AGENT`,
+  `A2A_TRANSFER_MAX_TTL_HOURS` → `A2A_TRANSFER_MAX_TTL_SECONDS` (B10).
+  Update your `.env` / systemd unit if you set any of these.
+- **Bus SQLite perms hardened to 0600** — `Store.__init__` now `chmod 0600`
+  the bus file and its `-wal`/`-shm` sidecars on connect (B9). Existing
+  files are NOT retroactively chmod'd — run
+  `chmod 600 ~/.a2a-bus.sqlite*` manually if needed. On multi-user hosts
+  this prevents world-readable agent messages.
+
+### Added
+
+- **`messages purge` CLI subcommand** — `a2a-mcp-bridge messages purge
+  --older-than-days 90 [--unread-only] [--dry-run]` deletes old messages
+  from the bus (B4). `--dry-run` shows the count without deleting.
+  `--unread-only` preserves unread messages (safe cleanup).
+- **`Store.purge_old_messages()`** — programmatic API for bus cleanup.
+  Returns the number of rows deleted (B4).
+- **Transfer sweep thread** — the stdio server now starts a daemon thread
+  that periodically calls `_transfer_sweep()` to purge expired file
+  transfers from `~/.a2a-transfers/` (B11). Controlled by
+  `A2A_TRANSFER_SWEEP_ENABLED` (default "1") and
+  `A2A_TRANSFER_SWEEP_INTERVAL_SECONDS` (default 300). The façade HTTP
+  server already had this; the stdio server did not.
+- **`max_tokens` filter in `Store.get_capabilities()`** — new optional
+  parameter filters capabilities by `tokens_per_call <= max_tokens` (B3).
+- **`AgentInfo`, `Capability`, `CostModel` in `models.py`** — moved from
+  `registry/models.py` to the main models module (B7). Import path:
+  `from a2a_mcp_bridge.models import AgentInfo`.
+
+### Fixed
+
+- **`Message._validate_intent` fallback divergence** — unknown intent
+  values now downgrade to `DEFAULT_INTENT` (= "execute") via
+  `normalize_intent`, instead of a hardcoded "triage" (B2). The Pydantic
+  field default `"triage"` (for backward-compat with old DB rows) is
+  unchanged.
+- **`capability_find_best` ignored `max_tokens`** — the parameter was in
+  the tool signature but never passed to the store (B3). Now wired
+  through to `Store.get_capabilities(max_tokens=...)`.
+
+### Removed
+
+- **`registry/` package** (6 files: `__init__`, `models`, `manager`,
+  `query`, `storage`, `heartbeat`) — dead code since v0.9.0 ADR-008
+  centralization. ~440 LOC of source + ~830 LOC of tests deleted (B7).
+- **CLI `registry` sub-app** — `registry discover`, `registry list-agents`,
+  `registry find-best` commands removed. They read the obsolete
+  `~/.a2a-bus.registry.db` file; use `capability_discover` /
+  `capability_query` MCP tools instead (B7/B8).
+- **Legacy registry tests** — `tests/test_registry/` (5 files) and
+  `tests/test_capability_registry.py` deleted (B7).
+
 ## [0.10.2] — 2026-05-25
 
 ### Breaking

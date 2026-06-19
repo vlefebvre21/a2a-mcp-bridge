@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from a2a_mcp_bridge.intents import DEFAULT_INTENT
 
 AGENT_ID_PATTERN: re.Pattern[str] = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 MAX_BODY_BYTES: int = 64 * 1024
@@ -58,7 +60,7 @@ class Message(BaseModel):
     def _validate_metadata(cls, v: Any) -> dict[str, Any] | None:
         """Ensure metadata is strictly a dict or None (not list, str, etc.)."""
         if v is not None and isinstance(v, dict):
-            return v
+            return v  # type: ignore[no-any-return]
         elif v is None:
             return None
         raise ValueError(f"metadata must be dict or None, got {type(v).__name__}")
@@ -66,13 +68,19 @@ class Message(BaseModel):
     @field_validator("intent", mode="before")
     @classmethod
     def _validate_intent(cls, v: Any) -> IntentLiteral:
-        """Validate intent is one of the allowed ADR-002 values, default 'triage'."""
+        """Validate intent is one of the allowed ADR-002 values.
+
+        Unknown values downgrade to ``DEFAULT_INTENT`` (from ``intents.py``),
+        matching ``normalize_intent`` behaviour — not a hardcoded fallback.
+        The Pydantic field default ``"triage"`` (line above) is separate and
+        only applies when the field is omitted entirely (backward-compat for
+        old DB rows without an intent column).
+        """
         if isinstance(v, str):
             valid = {"triage", "execute", "review", "question", "fyi"}
             if v in valid:
                 return v  # type: ignore[return-value]
-        # Default pour backward compat (ancien DB sans intent)
-        return "triage"
+        return DEFAULT_INTENT  # type: ignore[return-value]
 
 
 class AgentRecord(BaseModel):
@@ -105,7 +113,7 @@ class AgentRecord(BaseModel):
     def _validate_metadata(cls, v: Any) -> dict[str, Any] | None:
         """Ensure metadata is strictly a dict or None."""
         if v is not None and isinstance(v, dict):
-            return v
+            return v  # type: ignore[no-any-return]
         elif v is None:
             return None
         raise ValueError(f"metadata must be dict or None, got {type(v).__name__}")
@@ -124,3 +132,44 @@ class SendResult(BaseModel):
     @classmethod
     def _validate_recipient(cls, v: str) -> str:
         return AgentId.validate(v)
+
+
+class CostModel(BaseModel):
+    """Cost and performance model for a capability."""
+
+    tokens_per_call: float = Field(..., description="Estimated tokens per typical call")
+    latency_ms: int = Field(..., description="Average latency in milliseconds")
+    monetary_cost_usd: float | None = Field(None, description="Monetary cost if applicable")
+    type: Literal["local", "api", "hybrid"] = "local"
+
+
+class Capability(BaseModel):
+    """Represents one specialized skill announced by a Hermes agent."""
+
+    skill_id: str = Field(..., description="Unique skill identifier, e.g. 'code-review-python'")
+    description: str = Field(..., description="Human readable description")
+    parameters_schema: dict[str, Any] = Field(default_factory=dict)
+    return_schema: dict[str, Any] = Field(default_factory=dict)
+    domain: str = Field(..., description="Domain like 'code', 'research', 'media'")
+    cost: CostModel
+    supports_streaming: bool = False
+    max_context_tokens: int | None = None
+    permissions: list[str] = Field(default_factory=lambda: ["read"])
+    version: str = "1.0.0"
+
+
+class AgentInfo(BaseModel):
+    """Full information about a registered Hermes agent.
+
+    ``agent_id`` is the unique key on the bus. ``name`` is purely
+    presentational — two agents may share the same display name
+    (e.g. "Python Specialist") as long as their ``agent_id`` values
+    differ. The bus never enforces name uniqueness.
+    """
+
+    agent_id: str
+    name: str
+    capabilities: list[Capability] = Field(default_factory=list)
+    status: Literal["online", "offline", "degraded"] = "online"
+    last_heartbeat: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    metadata: dict[str, Any] = Field(default_factory=dict)

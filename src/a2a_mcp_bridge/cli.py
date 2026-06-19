@@ -7,6 +7,7 @@ import os
 import re
 import sqlite3
 from contextlib import suppress
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
@@ -14,8 +15,6 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from .registry.manager import CapabilityRegistry
-from .registry.query import RegistryQuery
 from .server import main as server_main
 from .store import Store
 
@@ -34,11 +33,9 @@ app = typer.Typer(
 agents_app = typer.Typer(help="Manage and inspect agents.")
 messages_app = typer.Typer(help="Inspect messages.")
 wake_registry_app = typer.Typer(help="Manage the webhook wake-up registry.")
-registry_app = typer.Typer(help="Query the Capability Registry.")
 app.add_typer(agents_app, name="agents")
 app.add_typer(messages_app, name="messages")
 app.add_typer(wake_registry_app, name="wake-registry")
-app.add_typer(registry_app, name="registry")
 
 console = Console()
 DEFAULT_DB = "~/.a2a-bus.sqlite"
@@ -279,6 +276,50 @@ def messages_tail(
             "✓" if r["read_at"] else "",
         )
     console.print(table)
+
+
+@messages_app.command("purge")
+def messages_purge(
+    db: str = typer.Option(DEFAULT_DB, help="Path to SQLite database file."),
+    older_than_days: int = typer.Option(90, help="Delete messages older than this many days."),
+    unread_only: bool = typer.Option(
+        False, "--unread-only",
+        help="Only purge messages that have been read (preserve unread).",
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run",
+        help="Show how many messages would be deleted without actually deleting.",
+    ),
+) -> None:
+    """Purge old messages from the bus to reclaim space."""
+    store = Store(_expand(db))
+    store.init_schema()
+
+    if dry_run:
+        # Count matching messages without deleting
+        from datetime import datetime, timedelta
+        # Use the same SQL logic as purge but SELECT COUNT(*) instead
+        cutoff = datetime.now(UTC) - timedelta(days=older_than_days)
+        conn = store._conn
+        conditions = ["created_at < ?"]
+        params: list[Any] = [cutoff.isoformat()]
+        if unread_only:
+            conditions.append("read_at IS NOT NULL")
+        sql = f"SELECT COUNT(*) FROM messages WHERE {' AND '.join(conditions)}"
+        count = conn.execute(sql, params).fetchone()[0]
+        console.print(
+            f"[yellow]DRY RUN[/yellow]: would delete {count} message(s) "
+            f"older than {older_than_days} days"
+            + (" (read only)" if unread_only else "")
+        )
+        return
+
+    deleted = store.purge_old_messages(older_than_days=older_than_days, unread_only=unread_only)
+    console.print(
+        f"[green]Purged {deleted} message(s)[/green] "
+        f"older than {older_than_days} days"
+        + (" (read only)" if unread_only else "")
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -537,101 +578,6 @@ def wake_registry_init(
             f"[yellow]skipped agents with mismatching webhook secrets:[/yellow] "
             f"{', '.join(skipped_mismatch)}"
         )
-
-
-# ── Capability Registry commands ────────────────────────────────────
-
-DEFAULT_REGISTRY_DB = "~/.a2a-bus.registry.db"
-
-
-@registry_app.command("discover")
-def registry_discover(
-    db: str = typer.Option(DEFAULT_REGISTRY_DB, help="Path to registry SQLite database."),
-) -> None:
-    """List all capabilities across all registered agents."""
-    registry = CapabilityRegistry(_expand(db))
-    query = RegistryQuery(registry)
-    capabilities = query.discover_all()
-    if not capabilities:
-        console.print("[yellow]No capabilities registered[/yellow]")
-        return
-    table = Table(title="Registered Capabilities")
-    table.add_column("agent_id")
-    table.add_column("agent_name")
-    table.add_column("skill_id")
-    table.add_column("domain")
-    table.add_column("tokens/call")
-    table.add_column("status")
-    for cap in capabilities:
-        # agent status is not in discover_all output; fetch from registry
-        agent = registry.get_agent(cap["agent_id"])
-        status = agent.status if agent else "?"
-        table.add_row(
-            cap["agent_id"],
-            cap["agent_name"],
-            cap["skill_id"],
-            cap["domain"],
-            str(cap["cost"]["tokens_per_call"]),
-            status,
-        )
-    console.print(table)
-
-
-@registry_app.command("list-agents")
-def registry_list_agents(
-    db: str = typer.Option(DEFAULT_REGISTRY_DB, help="Path to registry SQLite database."),
-) -> None:
-    """List all registered agents with their status and skill count."""
-    registry = CapabilityRegistry(_expand(db))
-    agents = registry.get_all_agents()
-    if not agents:
-        console.print("[yellow]No agents registered[/yellow]")
-        return
-    table = Table(title="Registered Agents")
-    table.add_column("agent_id")
-    table.add_column("name")
-    table.add_column("status")
-    table.add_column("capabilities")
-    table.add_column("last_heartbeat")
-    for a in agents:
-        table.add_row(
-            a.agent_id,
-            a.name,
-            a.status,
-            str(len(a.capabilities)),
-            a.last_heartbeat.isoformat(),
-        )
-    console.print(table)
-
-
-@registry_app.command("find-best")
-def registry_find_best(
-    skill: str = typer.Argument(help="Skill keyword to search for."),
-    max_tokens: float = typer.Option(None, "--max-tokens", help="Maximum token cost ceiling."),
-    db: str = typer.Option(DEFAULT_REGISTRY_DB, help="Path to registry SQLite database."),
-) -> None:
-    """Find the best matching agents for a skill keyword."""
-    registry = CapabilityRegistry(_expand(db))
-    query = RegistryQuery(registry)
-    results = query.find_best(skill, max_tokens=max_tokens)
-    if not results:
-        console.print(f"[yellow]No matching agents for '{skill}'[/yellow]")
-        return
-    table = Table(title=f"Best matches for '{skill}'")
-    table.add_column("agent_id")
-    table.add_column("agent_name")
-    table.add_column("skill_id")
-    table.add_column("score")
-    table.add_column("tokens/call")
-    for r in results:
-        table.add_row(
-            r["agent_id"],
-            r["agent_name"],
-            r["skill_id"],
-            f"{r['score']:.1f}",
-            str(r["cost_tokens"]),
-        )
-    console.print(table)
 
 
 if __name__ == "__main__":
