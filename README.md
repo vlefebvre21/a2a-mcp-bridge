@@ -2,7 +2,7 @@
 
 > MCP server that lets AI agents message each other — A2A-style peer-to-peer communication, exposed as MCP tools.
 
-**Status:** v0.5.1 — usable in production. Not yet published to PyPI; install from GitHub.
+**Status:** v0.11.0 — usable in production. Not yet published to PyPI; install from GitHub.
 
 > ### ⚠️ Known limitation: multi-session concurrency per profile
 >
@@ -69,8 +69,8 @@ Six core MCP tools (stable since v0.5) plus five Capability Registry tools
   cost ceiling.
 - `capability_discover()` — List all available capabilities across all
   registered agents.
-- `capability_find_best(skill, max_cost)` — Find the best-matching agents
-  for a specific skill keyword (scored).
+- `capability_find_best(skill, max_tokens)` — Find the best-matching agents
+  for a specific skill keyword (filtered by max_tokens).
 - `capability_ping(agent_id)` — Signal that an agent is still alive
   (heartbeat ping).
 
@@ -422,7 +422,7 @@ what each one contains, and who owns it:
 
 | Path | Purpose | Perms | Scope |
 |---|---|---|---|
-| `~/.a2a-bus.sqlite` | Authoritative message store (`messages` + `agents` tables) | 644 | Shared by all agents |
+| `~/.a2a-bus.sqlite` | Authoritative message store (`messages` + `agents` tables) | 600 | Shared by all agents |
 | `/tmp/a2a-signals/<agent>.notify` | Signal file touched by `agent_send` — wakes up long-polling `agent_subscribe` consumers | 644 | One per recipient |
 | `~/.a2a-wake-registry.json` | Bridge → gateway routing: `{wake_webhook_secret, agents: {<id>: {wake_webhook_url}}}` | 600 | Single, user-wide |
 | `~/.hermes/profiles/<P>/config.yaml` | Hermes gateway config, holds the `platforms.webhook` block | 644 | Per profile |
@@ -483,6 +483,27 @@ a2a-mcp-bridge --help | head -1
 jq -r '.wake_webhook_secret | length' ~/.a2a-wake-registry.json
 #   → 64 expected; 14-or-so means the string was masked during an edit.
 ```
+
+### Bus maintenance
+
+The bus SQLite file grows indefinitely as messages accumulate. Since
+v0.11.0, a `purge` subcommand is available for manual cleanup:
+
+```bash
+# Dry-run: see how many messages would be deleted
+a2a-mcp-bridge messages purge --older-than-days 90 --dry-run
+
+# Purge read messages older than 90 days (preserves unread)
+a2a-mcp-bridge messages purge --older-than-days 90 --unread-only
+
+# Purge ALL messages older than 90 days
+a2a-mcp-bridge messages purge --older-than-days 90
+```
+
+Expired file transfers in `~/.a2a-transfers/` are now swept automatically
+by a daemon thread in the stdio server (v0.11.0+, B11). The sweep runs
+every 5 minutes by default; disable with `A2A_TRANSFER_SWEEP_ENABLED=0`
+or tune the interval with `A2A_TRANSFER_SWEEP_INTERVAL_SECONDS=600`.
 
 ### Rollback
 
@@ -620,6 +641,8 @@ a2a-mcp-bridge register --all --hermes-profiles ~/.hermes/profiles
 | `A2A_TRANSFER_MAX_TTL_SECONDS` | `604800` | Hard cap on any transfer TTL (7 d). |
 | `A2A_TRANSFER_MAX_SIZE_BYTES` | `104857600` | Max file size per transfer (100 MB). |
 | `A2A_TRANSFER_MAX_PENDING_PER_AGENT` | `50` | Max un-expired transfers a single sender may have open. |
+| `A2A_TRANSFER_SWEEP_ENABLED` | `1` | Enable/disable the transfer sweep daemon thread (v0.11.0+). Set to `0` to disable. |
+| `A2A_TRANSFER_SWEEP_INTERVAL_SECONDS` | `300` | Interval in seconds between transfer sweep runs (v0.11.0+, default 5 min). |
 | `A2A_HEARTBEAT_INTERVAL` | `30` | Heartbeat check interval in seconds. Agents not seen for 2x this value are marked offline. |
 
 ## HTTP Facade (Remote Mode)
@@ -791,6 +814,10 @@ the declared recipient (fixed in v0.7.5, PR #45).
 | `A2A_FACADE_API_KEY` | Bearer token for façade auth. |
 | `A2A_TRANSFER_DIR` | Staging directory (default `~/.a2a-transfers/`, mode `0700`). |
 | `A2A_TRANSFER_MAX_TTL_SECONDS` | Hard cap on per-transfer TTL (default 604800 = 7 days). |
+| `A2A_TRANSFER_MAX_SIZE_BYTES` | Max file size per transfer (default 104857600 = 100 MB). |
+| `A2A_TRANSFER_MAX_PENDING_PER_AGENT` | Max pending transfers per sender (default 50). |
+| `A2A_TRANSFER_SWEEP_ENABLED` | Enable/disable sweep thread (default `1`). |
+| `A2A_TRANSFER_SWEEP_INTERVAL_SECONDS` | Sweep interval in seconds (default 300). |
 
 #### Facade deployment
 
