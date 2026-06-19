@@ -373,6 +373,35 @@ def test_capability_find_best_wrapper_returns_matches(tmp_path: Path) -> None:
     assert result["count"] == 1
 
 
+def test_capability_find_best_filters_by_max_tokens(tmp_path: Path) -> None:
+    """capability_find_best must filter results by the max_tokens ceiling."""
+    db = tmp_path / "bus.sqlite"
+    mcp = server_module.build_server(agent_id="alice", db_path=str(db))
+    announce = _get_tool_fn(mcp, "capability_announce")
+    find_best = _get_tool_fn(mcp, "capability_find_best")
+
+    # Agent with tokens_per_call = 1000
+    payload_low = _valid_agent_payload("alice", "python")
+    announce(**payload_low)
+
+    # Agent with tokens_per_call = 5000
+    payload_high = _valid_agent_payload("bob", "python")
+    payload_high["capabilities"][0]["cost"]["tokens_per_call"] = 5000
+    announce(**payload_high)
+
+    # No filter → both agents
+    result_all = find_best(skill="python")
+    assert result_all["count"] == 2
+
+    # max_tokens=2000 → only the 1000-token agent passes
+    result_mid = find_best(skill="python", max_tokens=2000)
+    assert result_mid["count"] == 1
+
+    # max_tokens=500 → nobody passes
+    result_low = find_best(skill="python", max_tokens=500)
+    assert result_low["count"] == 0
+
+
 def test_capability_ping_wrapper_records_heartbeat(tmp_path: Path) -> None:
     """capability_ping must touch the agent's last_seen_at via store.upsert_agent."""
     db = tmp_path / "bus.sqlite"
