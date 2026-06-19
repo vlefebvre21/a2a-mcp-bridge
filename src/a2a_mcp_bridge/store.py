@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import sqlite3
 import uuid
@@ -107,6 +108,18 @@ class Store:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.execute("PRAGMA journal_mode = WAL")
+        # C-04b: harden bus SQLite perms to 0600 — by default sqlite3.connect()
+        # creates the file with umask (typically 0644 on Linux), which lets any
+        # local user read all agent messages. Force 0600 so only the owner can
+        # read/write. WAL sidecars (-wal, -shm) inherit from the main file but
+        # we chmod them explicitly for thoroughness.
+        db_path_obj = Path(db_path)
+        if db_path_obj.exists():
+            os.chmod(db_path_obj, 0o600)
+            for suffix in ("-wal", "-shm"):
+                sidecar = db_path_obj.with_name(db_path_obj.name + suffix)
+                if sidecar.exists():
+                    os.chmod(sidecar, 0o600)
 
     def init_schema(self) -> None:
         self._conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
