@@ -461,6 +461,42 @@ class Store:
 
         return [self._row_to_message(r) for r in rows]
 
+    def purge_old_messages(
+        self,
+        older_than_days: int = 90,
+        *,
+        unread_only: bool = False,
+    ) -> int:
+        """Delete messages older than ``older_than_days`` days.
+
+        Args:
+            older_than_days: Delete messages whose ``created_at`` is older
+                than this many days. Must be >= 1.
+            unread_only: If ``True``, only delete messages that have been
+                read (``read_at IS NOT NULL``). Unread messages are preserved
+                regardless of age — they may still be pending triage.
+                If ``False`` (default), delete all matching messages
+                including unread ones.
+
+        Returns:
+            Number of rows deleted.
+        """
+        if older_than_days < 1:
+            raise ValueError("older_than_days must be >= 1")
+
+        # SQLite datetime() operates on TEXT ISO-8601 timestamps.
+        # 'now' is UTC; '-N days' produces the cutoff. We compare against
+        # created_at (not read_at) so age is measured from send time.
+        conditions = ["created_at < datetime('now', ?)"]
+        params: list[Any] = [f"-{older_than_days} days"]
+
+        if unread_only:
+            conditions.append("read_at IS NOT NULL")
+
+        sql = f"DELETE FROM messages WHERE {' AND '.join(conditions)}"
+        cursor = self._conn.execute(sql, params)
+        return cursor.rowcount
+
     def peek_inbox(
         self,
         agent_id: str,
