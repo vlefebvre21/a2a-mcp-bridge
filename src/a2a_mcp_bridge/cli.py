@@ -281,6 +281,50 @@ def messages_tail(
     console.print(table)
 
 
+@messages_app.command("purge")
+def messages_purge(
+    db: str = typer.Option(DEFAULT_DB, help="Path to SQLite database file."),
+    older_than_days: int = typer.Option(90, help="Delete messages older than this many days."),
+    unread_only: bool = typer.Option(
+        False, "--unread-only",
+        help="Only purge messages that have been read (preserve unread).",
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run",
+        help="Show how many messages would be deleted without actually deleting.",
+    ),
+) -> None:
+    """Purge old messages from the bus to reclaim space."""
+    store = Store(_expand(db))
+    store.init_schema()
+
+    if dry_run:
+        # Count matching messages without deleting
+        from datetime import datetime, timedelta, timezone
+        # Use the same SQL logic as purge but SELECT COUNT(*) instead
+        cutoff = datetime.now(timezone.utc) - timedelta(days=older_than_days)
+        conn = store._conn
+        conditions = ["created_at < ?"]
+        params: list[Any] = [cutoff.isoformat()]
+        if unread_only:
+            conditions.append("read_at IS NOT NULL")
+        sql = f"SELECT COUNT(*) FROM messages WHERE {' AND '.join(conditions)}"
+        count = conn.execute(sql, params).fetchone()[0]
+        console.print(
+            f"[yellow]DRY RUN[/yellow]: would delete {count} message(s) "
+            f"older than {older_than_days} days"
+            + (" (read only)" if unread_only else "")
+        )
+        return
+
+    deleted = store.purge_old_messages(older_than_days=older_than_days, unread_only=unread_only)
+    console.print(
+        f"[green]Purged {deleted} message(s)[/green] "
+        f"older than {older_than_days} days"
+        + (" (read only)" if unread_only else "")
+    )
+
+
 # --------------------------------------------------------------------------- #
 # wake-registry commands (v0.3)
 # --------------------------------------------------------------------------- #
