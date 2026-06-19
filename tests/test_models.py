@@ -11,6 +11,8 @@ from a2a_mcp_bridge.models import (
     SendResult,
 )
 
+from a2a_mcp_bridge.intents import DEFAULT_INTENT, normalize_intent
+
 
 class TestAgentId:
     def test_accepts_valid_ids(self):
@@ -51,6 +53,19 @@ class TestMessage:
         args["sender_id"] = "UPPER"
         with pytest.raises(ValidationError):
             Message(**args)
+
+    def test_validate_intent_unknown_downgrades_to_default_intent(self):
+        """Unknown intent values must downgrade to DEFAULT_INTENT, not 'triage'."""
+        args = self._valid_args()
+        args["intent"] = "bogus"
+        msg = Message(**args)
+        assert msg.intent == DEFAULT_INTENT
+        assert msg.intent == "execute"
+
+    def test_validate_intent_consistent_with_normalize_intent(self):
+        """_validate_intent and normalize_intent must agree on unknown values."""
+        assert Message._validate_intent("bogus") == normalize_intent("bogus")[0]
+        assert normalize_intent("bogus")[0] == DEFAULT_INTENT
 
 
 class TestAgentRecord:
