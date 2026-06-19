@@ -8,6 +8,8 @@ import logging
 import os
 import re
 import sys
+import threading
+import time
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
@@ -299,6 +301,44 @@ def _migrate_legacy_registry(store: Store, db_path: str) -> None:
         logger.warning("Could not rename legacy registry.db: %s", exc)
 
 
+def _start_transfer_sweep_thread() -> threading.Thread | None:
+    """Start a daemon thread that periodically purges expired file transfers.
+
+    Controlled by env vars:
+      A2A_TRANSFER_SWEEP_ENABLED (default "1") — set to "0" to disable.
+      A2A_TRANSFER_SWEEP_INTERVAL_SECONDS (default 300) — seconds between ticks.
+
+    Returns the Thread if started, None if disabled.
+    """
+    enabled = os.environ.get("A2A_TRANSFER_SWEEP_ENABLED", "1").lower() in ("1", "true", "yes")
+    if not enabled:
+        return None
+
+    try:
+        interval = int(os.environ.get("A2A_TRANSFER_SWEEP_INTERVAL_SECONDS", "300"))
+    except ValueError:
+        interval = 300
+    if interval < 1:
+        interval = 300
+
+    from .transfers import _transfer_sweep
+
+    def _sweep_loop() -> None:
+        while True:
+            time.sleep(interval)
+            try:
+                removed = _transfer_sweep()
+                if removed:
+                    logger.debug("transfer_sweep_thread removed %d expired transfer(s)", removed)
+            except Exception:
+                logger.warning("transfer_sweep_thread error", exc_info=True)
+
+    thread = threading.Thread(target=_sweep_loop, daemon=True, name="a2a-transfer-sweep")
+    thread.start()
+    logger.info("started transfer sweep thread (interval=%ds)", interval)
+    return thread
+
+
 def build_server(
     agent_id: str,
     db_path: str,
@@ -321,6 +361,7 @@ def build_server(
         # the registry-read cost. The return value is discarded — tool closures
         # below call _load_waker_if_stale() directly to pick up hot reloads.
         _load_waker_if_stale()
+        _start_transfer_sweep_thread()
     store.upsert_agent(agent_id)
 
     # Capability Registry — centralized in a2a-bus.sqlite (ADR-008)
