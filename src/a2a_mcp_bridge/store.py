@@ -595,8 +595,17 @@ class Store:
         self,
         keyword: str = "",
         max_cost_usd: float | None = None,
+        max_tokens: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Query capabilities by keyword and/or cost ceiling."""
+        """Query capabilities by keyword and/or cost ceiling.
+
+        Args:
+            keyword: Substring match on skill_id, domain, or description.
+            max_cost_usd: Filter to capabilities with monetary_cost_usd
+                <= this value (NULL costs always pass).
+            max_tokens: Filter to capabilities with tokens_per_call
+                <= this value.
+        """
         sql = (
             "SELECT agent_id, skill_id, domain, description, "
             "monetary_cost_usd, tokens_per_call, announced_at "
@@ -613,6 +622,10 @@ class Store:
         if max_cost_usd is not None:
             conditions.append("(monetary_cost_usd IS NULL OR monetary_cost_usd <= ?)")
             params.append(max_cost_usd)
+
+        if max_tokens is not None:
+            conditions.append("tokens_per_call <= ?")
+            params.append(max_tokens)
 
         if conditions:
             sql += " WHERE " + " AND ".join(conditions)
